@@ -25,9 +25,39 @@ with st.sidebar:
     with col_b:
         load_btn = st.button("📂 Загрузить проект", use_container_width=True)
 
-# --------- Инициализация карты ----------
-center = [55.75, 37.61]  # можно поменять под свой регион
-m = folium.Map(location=center, zoom_start=12, control_scale=True)
+# --------- Инициализация карты + слои тайлов ----------
+center = [55.75, 37.61]
+
+# создаём карту без дефолтных tiles, чтобы управлять слоями сами
+m = folium.Map(location=center, zoom_start=12, control_scale=True, tiles=None)
+
+# 1) Базовый OSM
+folium.TileLayer(
+    tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr="&copy; OpenStreetMap contributors",
+    name="OSM (стандарт)",
+    control=True
+).add_to(m)
+
+# 2) Спутник Esri World Imagery
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    name="Спутник (Esri)",
+    control=True
+).add_to(m)
+
+# (опционально) 3) Полупрозрачные подписи для спутника (Esri Labels)
+folium.TileLayer(
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    attr="Labels &copy; Esri",
+    name="Подписи (Esri)",
+    overlay=True,
+    control=True,
+    opacity=0.75
+).add_to(m)
+
+# Инструменты рисования
 draw = folium.plugins.Draw(
     draw_options={
         "polyline": True,   # ВПП как линия
@@ -41,9 +71,14 @@ draw = folium.plugins.Draw(
 )
 draw.add_to(m)
 
-# --------- Рендер и сбор геометрий из рисовалки ----------
+# Переключатель слоев (обязательно добавляем ПЕРЕД рендером st_folium)
+folium.LayerControl(position="topleft", collapsed=False).add_to(m)
+
+# Рендер в Streamlit
 out = st_folium(
-    m, width="100%", height=600,
+    m,
+    width="100%",
+    height=600,
     returned_objects=["all_drawings", "last_active_drawing"]
 )
 
