@@ -1,17 +1,17 @@
-import os, json, time
+import os, json, time, math
 from typing import List, Dict, Any
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
 
 st.set_page_config(page_title="AgroRoute MVP — Week 1", layout="wide")
-st.title("AgroRoute")
+st.title("AgroRoute — рисование + старт по началу ВПП (без маркера)")
 
-# --------- SIDEBAR: параметры самолёта + управление проектом ----------
+# --------- SIDEBAR ----------
 with st.sidebar:
     st.header("Параметры самолёта")
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 100.0, 20.0, 1.0)
-    turn_radius_m = st.number_input("Минимальный радиус разворота (м)", 5.0, 500.0, 50.0, 5.0)
+    turn_radius_m = st.number_input("Мин. радиус разворота (м)", 5.0, 500.0, 50.0, 5.0)
 
     st.divider()
     st.header("Проект")
@@ -19,50 +19,76 @@ with st.sidebar:
     project_name = st.text_input("Имя проекта", "demo")
     project_file = f"data/projects/{project_name}.json"
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        save_btn = st.button("💾 Сохранить проект", use_container_width=True)
-    with col_b:
-        load_btn = st.button("📂 Загрузить проект", use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        save_btn = st.button("💾 Сохранить", use_container_width=True)
+    with c2:
+        load_btn = st.button("📂 Загрузить", use_container_width=True)
 
-# --------- Инициализация карты + слои тайлов ----------
+st.caption("Правило: самолёт стоит в НАЧАЛЕ линии ВПП и направлен по её первому сегменту. Маркер не рисуем, просто сохраняем эти данные в JSON.")
+
+# --------- helpers ---------
+def split_drawings(drawings: List[Dict[str, Any]]):
+    """Первый Polygon — поле, остальные Polygon — NFZ, первая LineString — ВПП (ось)."""
+    field = None
+    runway = None
+    nfz = []
+    for feat in drawings or []:
+        g = feat.get("geometry", {})
+        t = g.get("type")
+        if t == "Polygon":
+            if field is None:
+                field = g
+            else:
+                nfz.append(g)
+        elif t == "LineString" and runway is None:
+            runway = g
+    return field, runway, nfz
+
+def calc_runway_pose(runway_line: Dict[str, Any]):
+    """Старт — первая точка polyline; курс — по первому сегменту (в градусах [0..360))."""
+    if not runway_line or not runway_line.get("coordinates"):
+        return None
+    coords = runway_line["coordinates"]
+    if len(coords) == 0:
+        return None
+    start_lon, start_lat = coords[0]
+    heading_deg = 0.0
+    if len(coords) >= 2:
+        (x0, y0), (x1, y1) = coords[0], coords[1]
+        heading_rad = math.atan2(y1 - y0, x1 - x0)
+        heading_deg = (math.degrees(heading_rad) + 360) % 360
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [start_lon, start_lat]},
+        "properties": {"heading_deg": heading_deg}
+    }
+
+# --------- карта (одна) ---------
 center = [55.75, 37.61]
-
-# создаём карту без дефолтных tiles, чтобы управлять слоями сами
 m = folium.Map(location=center, zoom_start=12, control_scale=True, tiles=None)
 
-# 1) Базовый OSM
+# базовые слои
 folium.TileLayer(
     tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attr="&copy; OpenStreetMap contributors",
-    name="OSM (стандарт)",
-    control=True
+    attr="© OpenStreetMap contributors",
+    name="OSM"
 ).add_to(m)
-
-# 2) Спутник Esri World Imagery
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
-    name="Спутник (Esri)",
-    control=True
+    attr="Esri", name="Спутник (Esri)"
 ).add_to(m)
-
-# (опционально) 3) Полупрозрачные подписи для спутника (Esri Labels)
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-    attr="Labels &copy; Esri",
-    name="Подписи (Esri)",
-    overlay=True,
-    control=True,
-    opacity=0.75
+    attr="Esri Labels", name="Подписи", overlay=True, control=True, opacity=0.75
 ).add_to(m)
 
-# Инструменты рисования
+# плагин рисования: Polygon (поле/NFZ), Polyline (ВПП). Marker отключен.
 draw = folium.plugins.Draw(
     draw_options={
-        "polyline": True,   # ВПП как линия
-        "polygon": True,    # Поле и NFZ
-        "marker": True,     # Старт
+        "polygon": {"shapeOptions": {"color": "green", "fillOpacity": 0.2}},
+        "polyline": {"shapeOptions": {"color": "blue", "weight": 6}},
+        "marker": False,
         "rectangle": False,
         "circle": False,
         "circlemarker": False,
@@ -70,51 +96,29 @@ draw = folium.plugins.Draw(
     edit_options={"edit": True, "remove": True},
 )
 draw.add_to(m)
-
-# Переключатель слоев (обязательно добавляем ПЕРЕД рендером st_folium)
 folium.LayerControl(position="topleft", collapsed=False).add_to(m)
 
-# Рендер в Streamlit
-out = st_folium(
-    m,
-    width="100%",
-    height=600,
-    returned_objects=["all_drawings", "last_active_drawing"]
-)
-
-# Функции разбора
-def split_drawings(drawings: List[Dict[str, Any]]):
-    field = None
-    runway_line = None
-    start_pt = None
-    nfz_list = []
-    for feat in drawings or []:
-        g = feat.get("geometry", {})
-        gtype = g.get("type")
-        if gtype == "Polygon":
-            # первый полигон считаем полем, остальные — NFZ
-            if field is None:
-                field = g
-            else:
-                nfz_list.append(g)
-        elif gtype == "LineString":
-            runway_line = g
-        elif gtype == "Point":
-            start_pt = g
-    return field, runway_line, start_pt, nfz_list
-
+# рендер и чтение геометрий
+out = st_folium(m, width="100%", height=600, returned_objects=["all_drawings"])
 drawings = out.get("all_drawings", [])
-field_gj, runway_gj, start_gj, nfz_gj_list = split_drawings(drawings)
+field_gj, runway_gj, nfz_gj_list = split_drawings(drawings)
 
-# --------- Статус ввода ----------
+# вычисляем "виртуальный" старт на основе ВПП
+runway_pose = calc_runway_pose(runway_gj)
+
+# --------- статус ---------
 st.subheader("Статус")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 col1.metric("Поле (Polygon)", "OK" if field_gj else "—")
 col2.metric("ВПП (Polyline)", "OK" if runway_gj else "—")
-col3.metric("Старт (Marker)", "OK" if start_gj else "—")
-col4.metric("NFZ (шт.)", len(nfz_gj_list))
+col3.metric("NFZ (шт.)", len(nfz_gj_list))
+if runway_pose:
+    lat = runway_pose["geometry"]["coordinates"][1]
+    lon = runway_pose["geometry"]["coordinates"][0]
+    hdg = runway_pose["properties"]["heading_deg"]
+    st.info(f"Старт (виртуально): lat {lat:.6f}, lon {lon:.6f} • курс ≈ {hdg:.1f}°")
 
-# --------- Сохранение / Загрузка ----------
+# --------- сохранение / загрузка ---------
 payload = {
     "timestamp": int(time.time()),
     "aircraft": {
@@ -123,9 +127,9 @@ payload = {
     },
     "geoms": {
         "field": field_gj,
-        "runway": runway_gj,
-        "start": start_gj,
         "nfz": nfz_gj_list,
+        "runway_centerline": runway_gj,  # ось ВПП, как нарисована
+        "runway_pose": runway_pose,      # старт + heading (по началу polyline)
     },
 }
 if save_btn:
@@ -137,12 +141,7 @@ if load_btn:
     if os.path.exists(project_file):
         with open(project_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Показываем загруженный JSON. Для реального редактирования — можно сделать прелоад на карту,
-        # но для Недели 1 достаточно проверки корректности (критерий).
         st.info(f"Загружено: {project_file}")
         st.json(data)
     else:
         st.error(f"Файл не найден: {project_file}")
-
-# st.caption("Критерии Недели 1: 1) на экране рисуются все слои; 2) JSON сохраняется и загружается без ошибок.")
-
