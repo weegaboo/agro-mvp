@@ -1,0 +1,17 @@
+[project]
+name = "agro-mvp"
+version = "0.1.0"
+description = "Streamlit MVP for field routing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "streamlit",
+  "streamlit-folium",
+  "folium",
+  "shapely>=2.0",
+  "pyproj",
+  "numpy"
+]
+
+[tool.uv]
+dev-dependencies = ["ruff", "pytest"]
