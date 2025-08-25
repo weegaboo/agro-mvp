@@ -1,0 +1,133 @@
+"""
+route/transit.py — построение транзита: ВПП -> entry, exit -> ВПП
+
+Ожидаемые входы (в UTM, МЕТРЫ!):
+- runway_centerline_m : shapely.geometry.LineString      # ось ВПП
+- entry_pt_m          : shapely.geometry.Point           # точка входа в покрытие поля
+- exit_pt_m           : shapely.geometry.Point           # точка выхода из покрытия
+- nfz_polys_m         : list[shapely.geometry.Polygon]   # запретные зоны (возможно пустой список)
+
+Что делает:
+- Строит "долёт" (runway_start -> entry) и "возврат" (exit -> runway_return_end)
+- Обходит NFZ простой эвристикой: прямая, иначе ломаная через 1–2 ближайшие вершины мешающего полигона
+- (опционально) расширяет NFZ safety-буфером
+
+Важно: сглаживания по радиусу разворота здесь НЕТ — добавим на Неделе 3.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Literal, Sequence, Tuple
+
+from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import unary_union
+
+# локальные утилиты
+from geo.utils import (
+    straight_or_vertex_avoid,
+    buffer_many,
+    line_endpoints,
+)
+
+
+ReturnEnd = Literal["start", "end"]
+
+
+@dataclass
+class TransitOptions:
+    """
+    Настройки построения транзита.
+    - return_to: к какому концу ВПП возвращаться: 'start' или 'end'
+    - nfz_safety_buffer_m: сколько "утолщать" NFZ для безопасного обхода
+    """
+    return_to: ReturnEnd = "start"
+    nfz_safety_buffer_m: float = 0.0
+
+
+def _pick_runway_point(centerline: LineString, where: ReturnEnd) -> Tuple[float, float]:
+    """Возвращает координату (x,y) начала или конца оси ВПП (в UTM)."""
+    p0, p1 = line_endpoints(centerline)
+    return p0 if where == "start" else p1
+
+
+def _prepare_nfz(nfz_polys_m: Sequence[Polygon], safety_buffer_m: float) -> list[Polygon]:
+    """Применяет safety-буфер (если >0) и возвращает список полигонов."""
+    nfz_polys_m = [p for p in nfz_polys_m if p and not p.is_empty]
+    if not nfz_polys_m:
+        return []
+    if safety_buffer_m and safety_buffer_m > 0:
+        grown = buffer_many(nfz_polys_m, safety_buffer_m)
+        if grown is None:
+            return []
+        # buffer_many может вернуть Multipolygon/Polygon (union).
+        # Приведём к списку полигонов:
+        if grown.geom_type == "Polygon":
+            return [grown]
+        elif grown.geom_type == "MultiPolygon":
+            return list(grown.geoms)
+    return list(nfz_polys_m)
+
+
+def build_transit(
+    runway_centerline_m: LineString,
+    entry_pt_m: Point,
+    exit_pt_m: Point,
+    nfz_polys_m: Sequence[Polygon],
+    options: TransitOptions = TransitOptions(),
+) -> tuple[LineString, LineString]:
+    """
+    Основная функция: строит (to_field, back_home) как LineString в UTM.
+
+    - to_field:   от начала ВПП (или по желанию — можно сделать параметром) до entry_pt_m
+    - back_home:  от exit_pt_m до выбранного конца ВПП (options.return_to)
+
+    Эвристика обхода NFZ: straight_or_vertex_avoid(...)
+    """
+    if runway_centerline_m is None or runway_centerline_m.is_empty:
+        raise ValueError("runway_centerline_m is required and must be non-empty")
+    if entry_pt_m is None or entry_pt_m.is_empty:
+        raise ValueError("entry_pt_m is required and must be non-empty")
+    if exit_pt_m is None or exit_pt_m.is_empty:
+        raise ValueError("exit_pt_m is required and must be non-empty")
+
+    # подготовим NFZ (с буфером безопасности)
+    nfz_prepared = _prepare_nfz(nfz_polys_m, options.nfz_safety_buffer_m)
+
+    # 1) Долёт: от НАЧАЛА ВПП (p0) до entry
+    p0_xy = _pick_runway_point(runway_centerline_m, "start")
+    entry_xy = (entry_pt_m.x, entry_pt_m.y)
+    to_field = straight_or_vertex_avoid(p0_xy, entry_xy, nfz_prepared)
+
+    # 2) Возврат: от exit к выбранному торцу ВПП
+    target_end = _pick_runway_point(runway_centerline_m, options.return_to)
+    exit_xy = (exit_pt_m.x, exit_pt_m.y)
+    back_home = straight_or_vertex_avoid(exit_xy, target_end, nfz_prepared)
+
+    return to_field, back_home
+
+
+# ------------------------ удобная обёртка «всё сразу» ------------------------ #
+
+@dataclass
+class TransitResult:
+    """Результат транзита в метрах (UTM)."""
+    to_field: LineString
+    back_home: LineString
+    nfz_used: list[Polygon]
+
+
+def build_transit_full(
+    runway_centerline_m: LineString,
+    entry_pt_m: Point,
+    exit_pt_m: Point,
+    nfz_polys_m: Sequence[Polygon],
+    return_to: ReturnEnd = "start",
+    nfz_safety_buffer_m: float = 0.0,
+) -> TransitResult:
+    """
+    Удобный вызов: вернёт и линии транзита, и список NFZ, который реально использовался (с буфером).
+    """
+    opts = TransitOptions(return_to=return_to, nfz_safety_buffer_m=nfz_safety_buffer_m)
+    nfz_prepared = _prepare_nfz(nfz_polys_m, nfz_safety_buffer_m)
+    to_field, back_home = build_transit(runway_centerline_m, entry_pt_m, exit_pt_m, nfz_prepared, opts)
+    return TransitResult(to_field=to_field, back_home=back_home, nfz_used=nfz_prepared)
