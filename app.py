@@ -12,6 +12,7 @@ from shapely.ops import unary_union
 from geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
 from route.cover_f2c import build_cover            # ТЕПЕРЬ покрытие поля — только F2C
 from route.transit import build_transit_full       # простая эвристика долёта/возврата
+from route.transit_f2c import build_transit_smooth_f2c
 from metrics.estimates import estimate_mission, EstimateOptions
 
 st.set_page_config(page_title="AgroRoute — F2C cover", layout="wide")
@@ -241,16 +242,25 @@ def build_route_from_file(project_path: str):
     log(f"✅ Покрытие готово: swaths={len(cover.swaths)}, angle≈{cover.angle_used_deg:.1f}°")
 
     # транзиты (простая эвристика обхода NFZ)
-    log("✈️ Строим долёт/возврат (простая эвристика обхода NFZ, буфер 10 м)")
-    trans = build_transit_full(
+    # --- было: эвристика обхода NFZ ---
+    # trans = build_transit_full(...)
+
+    # --- стало: гладкие транзиты через F2C ---
+    log("✈️ Строим гладкие транзиты Dubins/DubinsCC (с проверкой NFZ)")
+    trans = build_transit_smooth_f2c(
         runway_centerline_m=runway_m,
-        entry_pt_m=cover.entry_pt,
-        exit_pt_m=cover.exit_pt,
+        first_swath_m=cover.swaths[0],  # shapely LineString первой полосы
+        last_swath_m=cover.swaths[-1],  # shapely LineString последней полосы
+        use_cc=use_cc,
+        min_turn_radius_m=turn_r,
+        robot_width_m=1.5,  # можно вынести в UI
+        spray_width_m=spray_w,
         nfz_polys_m=nfz_m,
-        return_to="start",
-        nfz_safety_buffer_m=10.0
+        nfz_safety_buffer_m=10.0,
+        stub_len_m=8.0,
+        max_stub_len_m=25.0,
     )
-    log("✅ Транзиты построены")
+    log("✅ Гладкие транзиты построены")
 
     # зона удобрения
     sprayed_m = None
