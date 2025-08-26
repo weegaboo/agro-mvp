@@ -1,230 +1,182 @@
 # route/cover_f2c.py
-"""
-Покрытие поля (в UTM, метры):
-- Пытаемся использовать Fields2Cover, если установлен.
-- Если F2C недоступен, используем надёжный fallback на Shapely:
-  boustrophedon (змейка) из параллельных линий с шагом ширины захвата, обрезанных полем.
-
-Зависимости: shapely>=2.0
-Опционально: fields2cover (Python bindings)
-"""
-
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 import math
-from shapely.geometry import Polygon, LineString, Point, MultiLineString, box
-from shapely.ops import linemerge
-from shapely.affinity import rotate as shp_rotate
+import json
+from dataclasses import dataclass
+from typing import List, Literal, Optional, Iterable
 
-try:
-    import fields2cover as f2c  # noqa: F401
-    HAS_F2C = True
-except Exception:
-    HAS_F2C = False
+from shapely.geometry import Polygon, LineString, Point, shape as shp_shape
 
-from geo.utils import field_long_axis_angle_deg
+import fields2cover as f2c  # v2.0.0
 
+
+# ============================================================
+#                    ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def _xy(pt) -> tuple[float, float]:
+    """Возвращает (x, y) из точки (x,y) или (x,y,z)."""
+    return float(pt[0]), float(pt[1])
+
+def _ls_2d(ls: LineString) -> LineString:
+    """Обрезает Z-координату, если она присутствует."""
+    return LineString([_xy(p) for p in ls.coords])
+
+def _ring_from_coords(coords):
+    """Shapely coords -> f2c.LinearRing (замыкаем при необходимости)."""
+    ring = f2c.LinearRing()
+    if coords and coords[0] != coords[-1]:
+        coords = list(coords) + [coords[0]]
+    for x, y in coords:
+        ring.addPoint(float(x), float(y))
+    return ring
+
+def _cells_from_shapely(poly: Polygon) -> f2c.Cells:
+    """Shapely Polygon (в метрах) -> f2c.Cells с одним f2c.Cell.
+       Внутренние кольца (interiors) трактуем как отверстия."""
+    assert isinstance(poly, Polygon), "Ожидается shapely.Polygon (в метрах)"
+    cell = f2c.Cell()
+    cell.addRing(_ring_from_coords(list(poly.exterior.coords)))
+    for hole in poly.interiors:
+        cell.addRing(_ring_from_coords(list(hole.coords)))
+    cells = f2c.Cells()
+    cells.addGeometry(cell)
+    return cells
+
+def _to_shapely_linestring(f2c_ls) -> LineString:
+    """f2c LineString -> shapely LineString через GeoJSON; затем 2D."""
+    gj = json.loads(f2c_ls.exportToJson())
+    return _ls_2d(shp_shape(gj))
+
+def _iter_swaths(swaths_obj) -> Iterable:
+    """Надёжная итерация по контейнеру swaths в разных сборках F2C."""
+    n = swaths_obj.size() if hasattr(swaths_obj, "size") else None
+    if isinstance(n, int) and n >= 0:
+        for i in range(n):
+            for getter in ("getGeometry", "get", "at", "__getitem__", "geometry"):
+                if hasattr(swaths_obj, getter):
+                    try:
+                        sw = (swaths_obj[i] if getter == "__getitem__"
+                              else getattr(swaths_obj, getter)(i))
+                        yield sw
+                        break
+                    except Exception:
+                        pass
+        return
+    try:
+        for sw in swaths_obj:
+            yield sw
+    except TypeError:
+        pass
+
+def _swath_to_shapely(swath_obj) -> LineString:
+    """Берём у swath линию (getLineString/toLineString/…) и конвертируем в shapely 2D."""
+    for name in ("getLineString", "toLineString", "getPath", "lineString"):
+        if hasattr(swath_obj, name):
+            return _to_shapely_linestring(getattr(swath_obj, name)())
+    # иногда swath уже LS-подобный
+    return _to_shapely_linestring(swath_obj)
+
+
+# ============================================================
+#                          РЕЗУЛЬТАТ
+# ============================================================
 
 @dataclass
 class CoverResult:
-    swaths: List[LineString]       # отдельные проходы
-    cover_path: LineString         # сшитая "змейка" внутри поля
-    entry_pt: Point                # первая точка первого прохода
-    exit_pt: Point                 # последняя точка последнего прохода
-    angle_used_deg: float          # какой угол реально использовали
+    swaths: List[LineString]     # отдельные проходы по полю (в метрах, 2D)
+    cover_path: LineString       # единый плавный путь (в метрах, 2D)
+    entry_pt: Point              # первая точка cover_path (в метрах)
+    exit_pt: Point               # последняя точка cover_path (в метрах)
+    angle_used_deg: float        # оценка рабочего угла (°)
 
 
-# ------------------------------ F2C (заглушка) ------------------------------ #
-def _build_cover_with_f2c(field_poly_m: Polygon, spray_width_m: float, angle_deg: float) -> Optional[CoverResult]:
-    """
-    Каркас под Fields2Cover. Если F2C присутствует и ты уже настроил конверсию shapely->F2C,
-    можешь заполнить этот блок реальными вызовами.
+# ============================================================
+#                     ОСНОВНАЯ ФУНКЦИЯ (Только F2C)
+# ============================================================
 
-    Сейчас возвращает None, чтобы автоматом сработал fallback.
-    """
-    if not HAS_F2C:
-        return None
-
-    # Ниже — ориентировочный псевдокод API F2C (может отличаться от твоей версии биндингов):
-    # try:
-    #     # 1) Конверсия shapely Polygon -> F2C Polygon (придётся написать helper)
-    #     f_field = shapely_to_f2c_polygon(field_poly_m)
-    #
-    #     # 2) Задать ориентацию проходов
-    #     # F2C обычно принимает угол радианами; boustrophedon swaths по angle
-    #     theta = math.radians(angle_deg)
-    #
-    #     # 3) Генерация swaths
-    #     gen = f2c.SwathGenerator()  # имя класса может отличаться
-    #     swaths = gen.generate(f_field, spray_width_m, theta)
-    #
-    #     # 4) Построить маршрут по swaths (змейка)
-    #     path_builder = f2c.PathPlannerSimple()  # примерное название
-    #     path = path_builder.build(swaths)
-    #
-    #     # 5) Преобразовать F2C swaths/path обратно в shapely LineString
-    #     swaths_ls = [f2c_linestring_to_shapely(s) for s in swaths]
-    #     cover_path = f2c_linestring_to_shapely(path)
-    #
-    #     entry_pt = Point(cover_path.coords[0])
-    #     exit_pt = Point(cover_path.coords[-1])
-    #
-    #     return CoverResult(
-    #         swaths=swaths_ls, cover_path=cover_path,
-    #         entry_pt=entry_pt, exit_pt=exit_pt,
-    #         angle_used_deg=angle_deg
-    #     )
-    # except Exception:
-    #     # Если что-то не так — сваливаемся на fallback
-    #     return None
-
-    return None
-
-
-# --------------------------- Fallback: Shapely swaths --------------------------- #
-def _generate_boustrophedon_swaths(
-    field_poly_m: Polygon,
-    spray_width_m: float,
-    angle_deg: float,
-) -> List[LineString]:
-    """
-    Строим набор параллельных линий (swaths) под заданным углом, обрезаем полем.
-    Возвращаем упорядоченный список LineString, пронумерованный в стиле "змейки".
-    """
-    if spray_width_m <= 0:
-        raise ValueError("spray_width_m must be > 0")
-
-    # Вращаем поле так, чтобы swaths шли горизонтально (вдоль X), а мы шагали по Y
-    # Поворачиваем на -angle вокруг центроида
-    c = field_poly_m.centroid
-    field_rot = shp_rotate(field_poly_m, -angle_deg, origin=(c.x, c.y), use_radians=False)
-
-    minx, miny, maxx, maxy = field_rot.bounds
-    height = maxy - miny
-    if height <= 0:
-        return []
-
-    # Чуть расширим по X, чтобы линии гарантированно пересекали поле
-    pad = max(field_rot.bounds[2] - field_rot.bounds[0], spray_width_m) * 0.5
-    span_x0, span_x1 = minx - pad, maxx + pad
-
-    # Стартовую линию ставим на miny + half_width, затем шаг = spray_width
-    y = miny + (spray_width_m / 2.0)
-    lines_rot: List[LineString] = []
-
-    # Генерируем горизонтальные линии на всём диапазоне высоты с шагом ширины захвата
-    while y <= maxy + 1e-6:
-        line = LineString([(span_x0, y), (span_x1, y)])
-        inter = field_rot.intersection(line)
-
-        # intersection может быть LineString или MultiLineString
-        if isinstance(inter, LineString):
-            if inter.length > 0:
-                lines_rot.append(inter)
-        elif isinstance(inter, MultiLineString):
-            # Берём все сегменты (удалим слишком короткие)
-            for seg in inter.geoms:
-                if seg.length > 0.1:  # отсечь мусор
-                    lines_rot.append(seg)
-
-        y += spray_width_m
-
-    # Отсортируем по Y (возрастающе)
-    lines_rot.sort(key=lambda ln: (ln.coords[0][1] + ln.coords[-1][1]) / 2.0)
-
-    # Преобразуем в "змейку": каждый чётный проход слева->право, нечётный — справа->налево
-    boustrophedon_rot: List[LineString] = []
-    for i, ln in enumerate(lines_rot):
-        p0 = ln.coords[0]
-        p1 = ln.coords[-1]
-        if i % 2 == 0:
-            # слева -> право (как есть, предполагаем span_x0 < span_x1)
-            boustrophedon_rot.append(LineString([p0, p1]))
-        else:
-            # справа -> лево (разворачиваем)
-            boustrophedon_rot.append(LineString([p1, p0]))
-
-    # Повернём swaths обратно на исходный угол
-    swaths: List[LineString] = []
-    for ln in boustrophedon_rot:
-        swaths.append(shp_rotate(ln, angle_deg, origin=(c.x, c.y), use_radians=False))
-
-    return swaths
-
-
-def _stitch_swaths(swaths: List[LineString]) -> LineString:
-    """
-    Сшивает список проходов в один LineString: соединяем конец i-го с началом (i+1)-го.
-    На Неделе 2 — просто линейно, без дуг/сглаживания.
-    """
-    if not swaths:
-        return LineString()
-
-    coords = []
-    for i, sw in enumerate(swaths):
-        if i == 0:
-            coords.extend(list(sw.coords))
-        else:
-            # соединяем конец предыдущего с началом текущего прямым сегментом
-            prev_end = coords[-1]
-            cur_start = sw.coords[0]
-            if prev_end != cur_start:
-                coords.append(cur_start)
-            coords.extend(list(sw.coords)[1:])  # не дублируем стартовую точку
-    return LineString(coords)
-
-
-# ------------------------------- Публичная API ------------------------------- #
 def build_cover(
     field_poly_m: Polygon,
     spray_width_m: float,
-    angle_deg: Optional[float] = None,
+    *,
+    headland_factor: float = 3.0,
+    objective: Literal["swath_length", "n_swath"] = "swath_length",
+    route_order: Literal["snake", "boustro", "spiral"] = "snake",
+    use_continuous_curvature: bool = True,
+    min_turn_radius_m: Optional[float] = None,
 ) -> CoverResult:
     """
-    Основной вызов генерации покрытия поля.
-
-    Parameters
-    ----------
-    field_poly_m : Polygon (UTM, метры)
-    spray_width_m: ширина захвата, м
-    angle_deg    : угол полос относительно оси X (в градусах).
-                   Если None — берём длинную ось поля (minimum_rotated_rectangle).
-
-    Returns
-    -------
-    CoverResult
+    Строит покрытие поля целиком с помощью Fields2Cover v2.0.
+    ВХОД: геометрии должны быть в МЕТРАХ (UTM/локальная проекция).
+    БЕЗ фолбэков: при ошибке F2C бросит исключение.
     """
-    if angle_deg is None:
-        angle_deg = field_long_axis_angle_deg(field_poly_m)
+    if field_poly_m.is_empty:
+        raise ValueError("Поле пустое")
 
-    # Сначала пробуем F2C (если доступен и ты позже реализуешь конвертеры),
-    # иначе — надёжный fallback на Shapely.
-    res = _build_cover_with_f2c(field_poly_m, spray_width_m, angle_deg)
-    if res is not None:
-        return res
+    # 1) Робот: ширина корпуса небольшая, ширина захвата = spray_width_m
+    robot_width = max(0.8, min(spray_width_m, 5.0))
+    robot = f2c.Robot(float(robot_width), float(spray_width_m))
+    if min_turn_radius_m is not None and hasattr(robot, "setMinTurningRadius"):
+        robot.setMinTurningRadius(float(min_turn_radius_m))
 
-    # Fallback: shapely boustrophedon
-    swaths = _generate_boustrophedon_swaths(field_poly_m, spray_width_m, angle_deg)
-    cover_path = _stitch_swaths(swaths)
+    # 2) Поле -> кромка (headland)
+    cells = _cells_from_shapely(field_poly_m)
+    hl_gen = f2c.HG_Const_gen()
+    headlands = hl_gen.generateHeadlands(cells, headland_factor * robot.getWidth())
 
-    # Entry / Exit
-    if cover_path.is_empty or len(cover_path.coords) < 2:
-        # поле слишком маленькое или ширина > размера поля
-        return CoverResult(
-            swaths=[], cover_path=LineString(),
-            entry_pt=Point(), exit_pt=Point(),
-            angle_used_deg=angle_deg
-        )
+    # внутренняя область (рабочая зона)
+    if hasattr(headlands, "getGeometry"):
+        work_cell = headlands.getGeometry(0)
+    elif hasattr(headlands, "at"):
+        work_cell = headlands.at(0)
+    elif hasattr(headlands, "__getitem__"):
+        work_cell = headlands[0]
+    else:
+        # крайний случай — используем исходный cells
+        work_cell = cells.getGeometry(0) if hasattr(cells, "getGeometry") else cells
 
-    entry_pt = Point(cover_path.coords[0])
-    exit_pt = Point(cover_path.coords[-1])
+    # 3) Сваты (brute force + цель)
+    bf = f2c.SG_BruteForce()
+    obj = f2c.OBJ_NSwath() if objective == "n_swath" else f2c.OBJ_SwathLength()
+    swaths = bf.generateBestSwaths(obj, robot.getCovWidth(), work_cell)
+
+    # 4) Порядок обхода сватов (направления не трогаем)
+    if route_order == "boustro":
+        sorter = f2c.RP_Boustrophedon()
+    elif route_order == "spiral":
+        sorter = f2c.RP_Spiral()
+    else:
+        sorter = f2c.RP_Snake()
+    swaths = sorter.genSortedSwaths(swaths)
+
+    # 5) Плавный путь (Dubins / DubinsCC)
+    planner = f2c.PP_PathPlanning()
+    turn_model = f2c.PP_DubinsCurvesCC() if use_continuous_curvature and hasattr(f2c, "PP_DubinsCurvesCC") else f2c.PP_DubinsCurves()
+    path = planner.planPath(robot, swaths, turn_model)
+
+    # 6) В shapely (2D)
+    cover_ls = _to_shapely_linestring(path.toLineString())
+    swath_lines = [ _swath_to_shapely(sw) for sw in _iter_swaths(swaths) ]
+
+    # entry/exit
+    coords = list(cover_ls.coords)
+    x_e, y_e = _xy(coords[0])
+    x_l, y_l = _xy(coords[-1])
+    entry = Point(x_e, y_e)
+    exit_  = Point(x_l, y_l)
+
+    # оценка угла по первому свату
+    angle_deg = 0.0
+    if swath_lines and len(swath_lines[0].coords) >= 2:
+        x0, y0 = _xy(swath_lines[0].coords[0])
+        x1, y1 = _xy(swath_lines[0].coords[1])
+        angle_deg = (math.degrees(math.atan2(y1 - y0, x1 - x0)) + 360.0) % 360.0
 
     return CoverResult(
-        swaths=swaths,
-        cover_path=cover_path,
-        entry_pt=entry_pt,
-        exit_pt=exit_pt,
+        swaths=swath_lines,
+        cover_path=cover_ls,
+        entry_pt=entry,
+        exit_pt=exit_,
         angle_used_deg=angle_deg,
     )

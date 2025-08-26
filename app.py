@@ -10,21 +10,20 @@ from shapely.ops import unary_union
 
 # наши модули
 from geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
-from route.cover_f2c import build_cover
-from route.transit import build_transit_full
+from route.cover_f2c import build_cover            # ТЕПЕРЬ покрытие поля — только F2C
+from route.transit import build_transit_full       # простая эвристика долёта/возврата
 from metrics.estimates import estimate_mission, EstimateOptions
 
-st.set_page_config(page_title="AgroRoute MVP — Week 2", layout="wide")
-st.title("AgroRoute — рисование → Сохранить → Построить из файла")
+st.set_page_config(page_title="AgroRoute — F2C cover", layout="wide")
+st.title("AgroRoute — рисование → Сохранить → Построить (F2C внутри поля)")
 
 # =============== SESSION STATE ===============
 if "route" not in st.session_state:
-    st.session_state["route"] = None         # последний рассчитанный маршрут (WGS GeoJSON + метрики)
+    st.session_state["route"] = None
 if "build_log" not in st.session_state:
-    st.session_state["build_log"] = []       # логи последнего построения
+    st.session_state["build_log"] = []
 
 def log(msg: str):
-    """Пишем строку лога и показываем внизу."""
     st.session_state["build_log"].append(msg)
 
 def clear_log():
@@ -32,9 +31,13 @@ def clear_log():
 
 # =============== SIDEBAR ===============
 with st.sidebar:
-    st.header("Параметры самолёта")
+    st.header("Параметры самолёта / покрытия")
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 200.0, 20.0, 1.0)
-    turn_radius_m = st.number_input("Мин. радиус разворота (м)", 5.0, 500.0, 50.0)  # для сглаживания позже
+    turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
+    headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
+    route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral"], index=0)
+    objective = st.selectbox("Цель генератора сватов", ["swath_length", "n_swath"], index=0)
+    use_cc = st.checkbox("Непрерывная кривизна (DubinsCC)", True)
 
     st.divider()
     st.header("Проект")
@@ -53,7 +56,8 @@ with st.sidebar:
         clear_btn = st.button("🗑 Очистить маршрут", use_container_width=True)
 
 st.caption("Рисуем **поле (Polygon)**, **ВПП (Polyline)** и при необходимости **NFZ (Polygon)**. "
-           "Сначала «Сохранить», потом «Построить маршрут» — расчёт читает файл по имени проекта.")
+           "Сначала «Сохранить», затем «Построить маршрут» — расчёт читает файл по имени проекта. "
+           "Маршрут внутри поля строится **только** через Fields2Cover.")
 
 # =============== HELPERS (рисовалка) ===============
 def split_drawings(drawings: List[Dict[str, Any]]):
@@ -93,7 +97,7 @@ def calc_runway_pose(runway_line: Dict[str, Any]):
     }
 
 def sprayed_polygon(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> Optional[Polygon]:
-    """Зона удобрения как геометрия: union буферов проходов (spray_width/2), обрезанный полем."""
+    """Зона удобрения как union буферов проходов (spray_width/2), обрезанный полем."""
     if not field_poly_m or field_poly_m.is_empty or not swaths:
         return None
     half = max(spray_width_m, 0.0) / 2.0
@@ -153,7 +157,14 @@ if runway_gj:
 # =============== СОХРАНЕНИЕ / ПРОСМОТР ФАЙЛА ===============
 payload = {
     "timestamp": int(time.time()),
-    "aircraft": {"spray_width_m": float(spray_width_m), "turn_radius_m": float(turn_radius_m)},
+    "aircraft": {
+        "spray_width_m": float(spray_width_m),
+        "turn_radius_m": float(turn_radius_m),
+        "headland_factor": float(headland_factor),
+        "route_order": route_order,
+        "objective": objective,
+        "use_cc": bool(use_cc),
+    },
     "geoms": {
         "field": field_gj,
         "nfz": nfz_gj_list,
@@ -176,7 +187,7 @@ if show_btn:
     else:
         st.error(f"Файл не найден: {project_file}")
 
-# =============== ПОСТРОЕНИЕ МАРШРУТА ИЗ ФАЙЛА (с логами и сохранением в state) ===============
+# =============== ПОСТРОЕНИЕ МАРШРУТА ИЗ ФАЙЛА ===============
 def build_route_from_file(project_path: str):
     clear_log()
     log(f"🟦 Старт построения из файла: {project_path}")
@@ -185,7 +196,6 @@ def build_route_from_file(project_path: str):
         log("❌ Файл проекта не найден")
         raise FileNotFoundError(f"Файл не найден: {project_path}")
 
-    # 1) Чтение
     with open(project_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     log("📥 JSON прочитан")
@@ -198,7 +208,7 @@ def build_route_from_file(project_path: str):
         log("❌ В файле нет поля или ВПП")
         raise ValueError("В файле проекта нет поля или ВПП")
 
-    # 2) CRS и перевод в метры
+    # CRS и метры
     ctx = context_from_many_geojson([field_gj_saved, runway_gj_saved, *nfz_gj_saved])
     log(f"🗺️ CRS выбран (UTM EPSG={ctx.epsg}, зона={ctx.zone}{ctx.hemisphere})")
 
@@ -207,13 +217,30 @@ def build_route_from_file(project_path: str):
     nfz_m = [to_utm_geom(shape(g), ctx) for g in nfz_gj_saved]
     log("📐 Геометрии переведены в метры (UTM)")
 
-    # 3) Покрытие
-    spray_w = data.get("aircraft", {}).get("spray_width_m", 20.0)
-    log(f"🌾 Запуск покрытия: ширина захвата = {spray_w} м")
-    cover = build_cover(field_m, spray_w)
+    # покрытие поля — ТОЛЬКО F2C
+    ac = data.get("aircraft", {})
+    spray_w = float(ac.get("spray_width_m", 20.0))
+    turn_r  = float(ac.get("turn_radius_m", 40.0))
+    headland_factor = float(ac.get("headland_factor", 3.0))
+    objective = ac.get("objective", "swath_length")
+    route_order = ac.get("route_order", "snake")
+    use_cc = bool(ac.get("use_cc", True))
+
+    log(f"🌾 F2C покрытие: width={spray_w}м, Rmin={turn_r}м, headland={headland_factor}w, "
+        f"objective={objective}, order={route_order}, CC={use_cc}")
+
+    cover = build_cover(
+        field_poly_m=field_m,
+        spray_width_m=spray_w,
+        headland_factor=headland_factor,
+        objective=objective,
+        route_order=route_order,
+        use_continuous_curvature=use_cc,
+        min_turn_radius_m=turn_r,
+    )
     log(f"✅ Покрытие готово: swaths={len(cover.swaths)}, angle≈{cover.angle_used_deg:.1f}°")
 
-    # 4) Транзиты
+    # транзиты (простая эвристика обхода NFZ)
     log("✈️ Строим долёт/возврат (простая эвристика обхода NFZ, буфер 10 м)")
     trans = build_transit_full(
         runway_centerline_m=runway_m,
@@ -225,7 +252,7 @@ def build_route_from_file(project_path: str):
     )
     log("✅ Транзиты построены")
 
-    # 5) Зона удобрения
+    # зона удобрения
     sprayed_m = None
     try:
         sprayed_m = (sprayed_polygon(field_m, cover.swaths, spray_w) or None)
@@ -233,7 +260,7 @@ def build_route_from_file(project_path: str):
     except Exception as e:
         log(f"⚠️ Не удалось построить зону удобрения: {e}")
 
-    # 6) Метрики
+    # метрики
     opts = EstimateOptions(
         transit_speed_ms=20.0, spray_speed_ms=15.0,
         fuel_burn_lph=8.0, fert_rate_l_per_ha=10.0,
@@ -249,13 +276,14 @@ def build_route_from_file(project_path: str):
     )
     log("📊 Метрики рассчитаны")
 
-    # 7) Назад в WGS и складываем в session_state
+    # в WGS для отображения
     to_field_wgs   = to_wgs_geom(trans.to_field, ctx)
     back_home_wgs  = to_wgs_geom(trans.back_home, ctx)
     cover_path_wgs = to_wgs_geom(cover.cover_path, ctx)
     swaths_wgs     = [to_wgs_geom(s, ctx) for s in cover.swaths]
     sprayed_wgs    = to_wgs_geom(sprayed_m, ctx) if sprayed_m is not None else None
-    log("🔁 Конвертация результата в WGS84 выполнена")
+    field_wgs      = shape(field_gj_saved)  # уже WGS
+    nfz_wgs        = [shape(g) for g in nfz_gj_saved]
 
     st.session_state["route"] = {
         "geo": {
@@ -264,8 +292,8 @@ def build_route_from_file(project_path: str):
             "cover_path": mapping(cover_path_wgs),
             "swaths": [mapping(s) for s in swaths_wgs],
             "sprayed": mapping(sprayed_wgs) if sprayed_wgs is not None else None,
-            "field": field_gj_saved,
-            "nfz": nfz_gj_saved,
+            "field": mapping(field_wgs),
+            "nfz": [mapping(g) for g in nfz_wgs],
         },
         "metrics": {
             "length_total_m": est.length_total_m,
@@ -297,7 +325,7 @@ if build_btn:
         log(tb)
         st.error(f"Ошибка при построении маршрута: {e}")
 
-# =============== ОТРИСОВКА МАРШРУТА (если есть в state) ===============
+# =============== ОТРИСОВКА МАРШРУТА (если есть) ===============
 route = st.session_state["route"]
 if route:
     st.subheader("Маршрут (последний рассчитанный)")
@@ -312,7 +340,7 @@ if route:
         attr="Esri Labels", name="Подписи", overlay=True, control=True, opacity=0.75
     ).add_to(m2)
 
-    # фон
+    # фон: поле и NFZ
     if route["geo"].get("field"):
         folium.GeoJson(route["geo"]["field"], name="Поле",
                        style_function=lambda x: {"color":"#2ca02c","fillOpacity":0.1}).add_to(m2)
@@ -320,11 +348,13 @@ if route:
         folium.GeoJson(gj, name="NFZ",
                        style_function=lambda x: {"color":"#d62728","fillOpacity":0.15}).add_to(m2)
 
+    # зона удобрения (опционально)
     if route["geo"].get("sprayed"):
         folium.GeoJson(route["geo"]["sprayed"], name="Зона удобрения",
                        style_function=lambda x: {"color":"#ff0000","fillOpacity":0.25}).add_to(m2)
 
-    folium.GeoJson(route["geo"]["cover_path"], name="Проходы по полю",
+    # маршруты
+    folium.GeoJson(route["geo"]["cover_path"], name="Покрытие по полю",
                    style_function=lambda x: {"color":"#00aa00","weight":4}).add_to(m2)
     folium.GeoJson(route["geo"]["to_field"],  name="Долёт",
                    style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)

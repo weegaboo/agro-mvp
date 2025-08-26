@@ -3,7 +3,7 @@ name = "agro-mvp"
 version = "0.1.0"
 description = "Streamlit MVP for field routing"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9, <3.12"
 dependencies = [
   "streamlit",
   "streamlit-folium",
