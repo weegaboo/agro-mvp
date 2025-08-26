@@ -4,3 +4,4 @@ __pycache__/
 .streamlit/
 data/projects/
 .env
+.idea/
