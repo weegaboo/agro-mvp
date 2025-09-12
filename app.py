@@ -45,6 +45,20 @@ with st.sidebar:
     project_name = st.text_input("Имя проекта", "demo")
     project_file = f"data/projects/{project_name}.json"
 
+    st.divider()
+    st.header("Экспорт маршрута (WGS84)")
+    export_step_m = st.number_input("Шаг дискретизации, м", 1.0, 100.0, 5.0, 1.0)
+    export_name = st.text_input("Имя файла (без расширения)", f"{project_name}_route")
+    export_btn = st.button("💾 Экспортировать (GeoJSON + CSV)", use_container_width=True)
+
+    st.divider()
+    st.header("Экспорт: Mission Planner (QGC WPL 110)")
+    mp_alt_agl = st.number_input("Высота (AGL), м", 5.0, 150.0, 30.0, 1.0)
+    mp_speed_ms = st.number_input("Скорость, м/с", 3.0, 40.0, 15.0, 0.5)
+    mp_step_m = st.number_input("Шаг по маршруту, м", 1.0, 50.0, 5.0, 1.0)
+    mp_filename = st.text_input("Имя файла (.waypoints)", f"{project_name}_mission")
+    mp_export_btn = st.button("💾 Экспорт в Mission Planner", use_container_width=True)
+
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         save_btn = st.button("💾 Сохранить", use_container_width=True)
@@ -60,6 +74,74 @@ st.caption("Рисуем **поле (Polygon)**, **ВПП (Polyline)** и при
            "Маршрут внутри поля строится **только** через Fields2Cover.")
 
 # =============== HELPERS (рисовалка) ===============
+def sample_linestring_m(ls_m: LineString, step_m: float) -> List[Point]:
+    """Точки через каждые step_m + финальная точка."""
+    if ls_m.is_empty:
+        return []
+    L = float(ls_m.length)
+    if L <= 0:
+        return [Point(ls_m.coords[0])]
+    step = max(0.1, float(step_m))
+    dists = [i * step for i in range(int(L // step))] + [L]
+    return [ls_m.interpolate(d) for d in dists]
+
+def build_qgc_wpl(points_wgs: List[Point], *, alt_agl: float, speed_ms: float, include_takeoff=True, include_rtl=True) -> str:
+    """
+    Собирает текст в формате QGC WPL 110 для Mission Planner.
+    FRAME = 3 (GLOBAL_RELATIVE_ALT).
+    Команды:
+      - 22 TAKEOFF (первой точке)
+      - 178 DO_CHANGE_SPEED (скорость в м/с)
+      - 16 WAYPOINT для всех точек маршрута
+      - 20 RTL в конце (опционально)
+    """
+    lines = ["QGC WPL 110"]
+    seq = 0
+    FRAME = 3  # GLOBAL_RELATIVE_ALT
+    AUTO = 1
+
+    # защита от пустого
+    if not points_wgs:
+        return "\n".join(lines)
+
+    lat0, lon0 = points_wgs[0].y, points_wgs[0].x
+
+    if include_takeoff:
+        # 22 TAKEOFF: param1=мин взлётный угол (0), x=lat, y=lon, z=alt
+        lines.append(f"{seq} 1 {FRAME} 22 0 0 0 0 {lat0:.7f} {lon0:.7f} {alt_agl:.2f} {AUTO}")
+        seq += 1
+
+    # 178 DO_CHANGE_SPEED: param1=0(airspeed), param2=speed m/s, x=y=z=0
+    lines.append(f"{seq} 0 {FRAME} 178 0 {speed_ms:.3f} 0 0 0 0 0 {AUTO}")
+    seq += 1
+
+    # 16 WAYPOINT для всех точек
+    for pt in points_wgs:
+        lat, lon = pt.y, pt.x
+        lines.append(f"{seq} 0 {FRAME} 16 0 0 0 0 {lat:.7f} {lon:.7f} {alt_agl:.2f} {AUTO}")
+        seq += 1
+
+    if include_rtl:
+        # 20 RTL: x=y=z=0
+        lines.append(f"{seq} 0 {FRAME} 20 0 0 0 0 0 0 0 {AUTO}")
+        seq += 1
+
+    return "\n".join(lines)
+
+
+def sample_linestring_m(ls_m: LineString, step_m: float) -> List[Point]:
+    """Возвращает список точек (Point) через каждые step_m по длине LineString + последний узел."""
+    if ls_m.is_empty:
+        return []
+    L = float(ls_m.length)
+    if L == 0:
+        return [Point(ls_m.coords[0])]
+    step = max(0.1, float(step_m))
+    # равномерные расстояния + финальная точка
+    dists = [i * step for i in range(int(L // step))] + [L]
+    pts = [ls_m.interpolate(d) for d in dists]
+    return pts
+
 def split_drawings(drawings: List[Dict[str, Any]]):
     """Первый Polygon — поле, остальные Polygon — NFZ; первая LineString — ВПП (ось)."""
     field = None
@@ -377,6 +459,174 @@ if route:
     c6.metric("Обработка, км",    f"{mtr['length_spray_m']/1000:.2f}")
     c7.metric("Площадь поля, га", f"{mtr['field_area_ha']:.3f}")
     c8.metric("Покрыто, га",      f"{mtr['sprayed_area_ha']:.3f}")
+
+
+# ======= ЭКСПОРТ МАРШРУТА (WGS84, с дискретизацией по шагу в метрах) =======
+if route and export_btn:
+    try:
+        # 1) Подгружаем проект, чтобы восстановить контекст CRS (для метра)
+        if not os.path.exists(project_file):
+            st.error("Файл проекта не найден для экспорта.")
+        else:
+            with open(project_file, "r", encoding="utf-8") as f:
+                data_for_ctx = json.load(f)
+            ge = data_for_ctx.get("geoms", {})
+            field_for_ctx = ge.get("field")
+            runway_for_ctx = ge.get("runway_centerline")
+            nfz_for_ctx = ge.get("nfz", []) or []
+            if not field_for_ctx or not runway_for_ctx:
+                st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
+            else:
+                # 2) Собираем CRS и переводим маршрутные линии в метры
+                ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+
+                def _wgs_ls_to_m(ls_gj):
+                    return to_utm_geom(shape(ls_gj), ctx)
+
+                to_field_wgs_gj  = route["geo"]["to_field"]
+                back_home_wgs_gj = route["geo"]["back_home"]
+                cover_wgs_gj     = route["geo"]["cover_path"]
+
+                to_field_m  = _wgs_ls_to_m(to_field_wgs_gj)
+                back_home_m = _wgs_ls_to_m(back_home_wgs_gj)
+                cover_m     = _wgs_ls_to_m(cover_wgs_gj)
+
+                # 3) Дискретизация (в метрах), затем обратно в WGS
+                step = float(export_step_m)
+                samples = {
+                    "to_field":  sample_linestring_m(to_field_m,  step),
+                    "cover":     sample_linestring_m(cover_m,     step),
+                    "back_home": sample_linestring_m(back_home_m, step),
+                }
+
+                samples_wgs = {
+                    seg: [to_wgs_geom(p, ctx) for p in pts] for seg, pts in samples.items()
+                }
+
+                # 4) Пишем GeoJSON (FeatureCollection с LineString’ами) и CSV с точками
+                export_dir = "data/exports"
+                os.makedirs(export_dir, exist_ok=True)
+                base = os.path.join(export_dir, f"{export_name.strip() or 'route'}_{int(step)}m")
+
+                # 4.1 GeoJSON: исходные «неразреженные» LineString в WGS + свойства
+                export_fc = {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"segment": "to_field"},
+                            "geometry": route["geo"]["to_field"],
+                        },
+                        {
+                            "type": "Feature",
+                            "properties": {"segment": "cover"},
+                            "geometry": route["geo"]["cover_path"],
+                        },
+                        {
+                            "type": "Feature",
+                            "properties": {"segment": "back_home"},
+                            "geometry": route["geo"]["back_home"],
+                        },
+                    ],
+                }
+                geojson_path = f"{base}.geojson"
+                with open(geojson_path, "w", encoding="utf-8") as f:
+                    json.dump(export_fc, f, ensure_ascii=False, indent=2)
+
+                # 4.2 CSV точек (дискретизированные точки)
+                import csv
+                csv_path = f"{base}.csv"
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    w.writerow(["segment", "idx", "lat", "lon"])
+                    for seg, pts in samples_wgs.items():
+                        for i, p in enumerate(pts):
+                            lon, lat = p.x, p.y
+                            w.writerow([seg, i, f"{lat:.8f}", f"{lon:.8f}"])
+
+                # 5) Кнопки скачивания
+                colg, colc = st.columns(2)
+                with open(geojson_path, "rb") as fh:
+                    colg.download_button("⬇️ GeoJSON (WGS84)", fh, file_name=os.path.basename(geojson_path), mime="application/geo+json", use_container_width=True)
+                with open(csv_path, "rb") as fh:
+                    colc.download_button("⬇️ CSV (точки по шагу)", fh, file_name=os.path.basename(csv_path), mime="text/csv", use_container_width=True)
+
+                st.success(f"Экспорт готов: {geojson_path} и {csv_path}")
+
+    except Exception as e:
+        st.error(f"Ошибка экспорта: {e}")
+
+
+# ======= ЭКСПОРТ В MISSION PLANNER (.waypoints) =======
+if route and mp_export_btn:
+    try:
+        # Нам нужен контекст CRS для метрической дискретизации
+        if not os.path.exists(project_file):
+            st.error("Файл проекта не найден — не могу определить проекцию.")
+        else:
+            with open(project_file, "r", encoding="utf-8") as f:
+                data_for_ctx = json.load(f)
+            ge = data_for_ctx.get("geoms", {})
+            field_for_ctx = ge.get("field")
+            runway_for_ctx = ge.get("runway_centerline")
+            nfz_for_ctx = ge.get("nfz", []) or []
+            if not field_for_ctx or not runway_for_ctx:
+                st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
+            else:
+                # CRS
+                ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+
+                # Берём линии маршрута из session_state (в WGS), переводим в метры
+                def _wgs_ls_to_m(ls_gj):
+                    return to_utm_geom(shape(ls_gj), ctx)
+
+                to_field_m  = _wgs_ls_to_m(route["geo"]["to_field"])
+                cover_m     = _wgs_ls_to_m(route["geo"]["cover_path"])
+                back_home_m = _wgs_ls_to_m(route["geo"]["back_home"])
+
+                # Дискретизация
+                step = float(mp_step_m)
+                pts_to   = sample_linestring_m(to_field_m,  step)
+                pts_cov  = sample_linestring_m(cover_m,     step)
+                pts_back = sample_linestring_m(back_home_m, step)
+
+                # Склейка точек: to_field -> cover -> back_home
+                pts_all_m = pts_to + pts_cov + pts_back
+                if not pts_all_m:
+                    st.error("Нет точек для экспорта.")
+                else:
+                    # Переводим в WGS84
+                    pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
+
+                    # Строим .waypoints
+                    wpl_text = build_qgc_wpl(
+                        pts_all_wgs,
+                        alt_agl=float(mp_alt_agl),
+                        speed_ms=float(mp_speed_ms),
+                        include_takeoff=True,
+                        include_rtl=True
+                    )
+
+                    # Сохраняем и отдаём
+                    export_dir = "data/exports"
+                    os.makedirs(export_dir, exist_ok=True)
+                    base = (mp_filename.strip() or f"{project_name}_mission").replace(" ", "_")
+                    wpl_path = os.path.join(export_dir, f"{base}.waypoints")
+                    with open(wpl_path, "w", encoding="utf-8") as f:
+                        f.write(wpl_text)
+
+                    with open(wpl_path, "rb") as fh:
+                        st.download_button(
+                            "⬇️ Mission Planner (.waypoints)",
+                            fh,
+                            file_name=os.path.basename(wpl_path),
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                    st.success(f"Готово: {wpl_path}")
+
+    except Exception as e:
+        st.error(f"Ошибка экспорта в Mission Planner: {e}")
 
 # =============== ЛОГИ ===============
 if st.session_state["build_log"]:
