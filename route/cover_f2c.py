@@ -79,6 +79,41 @@ def _swath_to_shapely(swath_obj) -> LineString:
     return _to_shapely_linestring(swath_obj)
 
 
+def get_best_variant_by_runway(
+    runway_m: LineString,
+    swaths: "f2c.Swaths",
+    sorter,
+):
+    """
+    Выбирает variant=0 или 1 так, чтобы первая точка маршрута была ближе всего
+    к последней точке ВПП (runway_m). Возвращает: best_variant
+    """
+    if runway_m.geom_type != "LineString":
+        runway_m = LineString(runway_m)  # на случай, если пришёл массив координат
+    runway_end = Point(runway_m.coords[-1])
+    best_distance, best_variant = None, 0
+    for variant in (0, 1):
+        sw_sorted = sorter.genSortedSwaths(swaths, variant)
+        first_sw = sw_sorted.at(0)
+        line = shp_shape(
+            {
+                "type": "LineString",
+                "coordinates": [
+                    [first_sw.startPoint().X(), first_sw.startPoint().Y()],
+                    [first_sw.endPoint().X(), first_sw.endPoint().Y()]
+                ]
+            }
+        )
+        first_ls = LineString([(float(x), float(y)) for (x, y, *_) in line.coords])
+        # «первая точка маршрута» — старт первой сват-линии
+        route_start = Point(first_ls.coords[0])
+        distance = float(runway_end.distance(route_start))
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_variant = variant
+    return best_variant
+
+
 # ============================================================
 #                          РЕЗУЛЬТАТ
 # ============================================================
@@ -98,6 +133,7 @@ class CoverResult:
 
 def build_cover(
     field_poly_m: Polygon,
+    runway_m: LineString,
     spray_width_m: float,
     *,
     headland_factor: float = 3.0,
@@ -138,17 +174,29 @@ def build_cover(
 
     # 3) Сваты (brute force + цель)
     bf = f2c.SG_BruteForce()
-    obj = f2c.OBJ_NSwath() if objective == "n_swath" else f2c.OBJ_SwathLength()
+    if objective == "n_swath":
+        obj = f2c.OBJ_NSwath()
+    elif objective == "swath_length":
+        obj = f2c.OBJ_SwathLength()
+    elif objective == "field_coverage":
+        obj = f2c.OBJ_FieldCoverage()
+    elif objective == "overlap":
+        obj = f2c.OBJ_Overlaps()
+    else:
+        obj = f2c.OBJ_NSwath()
     swaths = bf.generateBestSwaths(obj, robot.getCovWidth(), work_cell)
 
     # 4) Порядок обхода сватов (направления не трогаем)
     if route_order == "boustro":
         sorter = f2c.RP_Boustrophedon()
     elif route_order == "spiral":
-        sorter = f2c.RP_Spiral()
+        sorter = f2c.RP_Spiral(48)
+    elif route_order == "snake":
+        sorter = f2c.RP_Snake()
     else:
         sorter = f2c.RP_Snake()
-    swaths = sorter.genSortedSwaths(swaths)
+    variant = get_best_variant_by_runway(runway_m, swaths, sorter)
+    swaths = sorter.genSortedSwaths(swaths, variant=variant)
 
     # 5) Плавный путь (Dubins / DubinsCC)
     planner = f2c.PP_PathPlanning()

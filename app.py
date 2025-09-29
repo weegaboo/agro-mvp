@@ -36,7 +36,11 @@ with st.sidebar:
     turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
     headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
     route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral"], index=0)
-    objective = st.selectbox("Цель генератора сватов", ["swath_length", "n_swath"], index=0)
+    objective = st.selectbox(
+        "Цель генератора сватов",
+        ["n_swath", "swath_length", "field_coverage", "overlap"],
+        index=0
+    )
     use_cc = st.checkbox("Непрерывная кривизна (DubinsCC)", True)
 
     st.divider()
@@ -304,7 +308,7 @@ def build_route_from_file(project_path: str):
     spray_w = float(ac.get("spray_width_m", 20.0))
     turn_r  = float(ac.get("turn_radius_m", 40.0))
     headland_factor = float(ac.get("headland_factor", 3.0))
-    objective = ac.get("objective", "swath_length")
+    objective = ac.get("objective", "n_swath")
     route_order = ac.get("route_order", "snake")
     use_cc = bool(ac.get("use_cc", True))
 
@@ -313,6 +317,7 @@ def build_route_from_file(project_path: str):
 
     cover = build_cover(
         field_poly_m=field_m,
+        runway_m=runway_m,
         spray_width_m=spray_w,
         headland_factor=headland_factor,
         objective=objective,
