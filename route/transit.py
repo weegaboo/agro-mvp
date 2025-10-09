@@ -28,6 +28,7 @@ from geo.utils import (
     buffer_many,
     line_endpoints,
 )
+from route.ompl_simple_transit import ompl_simple_runway_swath
 
 
 ReturnEnd = Literal["start", "end"]
@@ -69,9 +70,10 @@ def _prepare_nfz(nfz_polys_m: Sequence[Polygon], safety_buffer_m: float) -> list
 
 
 def build_transit(
-    runway_centerline_m: LineString,
-    entry_pt_m: Point,
-    exit_pt_m: Point,
+    runway_m: LineString,
+    first_swath: LineString,
+    last_swath: LineString,
+    turn_r: float,
     nfz_polys_m: Sequence[Polygon],
     options: TransitOptions = TransitOptions(),
 ) -> tuple[LineString, LineString]:
@@ -83,26 +85,24 @@ def build_transit(
 
     Эвристика обхода NFZ: straight_or_vertex_avoid(...)
     """
-    if runway_centerline_m is None or runway_centerline_m.is_empty:
+    if runway_m is None or runway_m.is_empty:
         raise ValueError("runway_centerline_m is required and must be non-empty")
-    if entry_pt_m is None or entry_pt_m.is_empty:
-        raise ValueError("entry_pt_m is required and must be non-empty")
-    if exit_pt_m is None or exit_pt_m.is_empty:
-        raise ValueError("exit_pt_m is required and must be non-empty")
 
     # подготовим NFZ (с буфером безопасности)
     nfz_prepared = _prepare_nfz(nfz_polys_m, options.nfz_safety_buffer_m)
 
-    # 1) Долёт: от НАЧАЛА ВПП (p0) до entry
-    p0_xy = _pick_runway_point(runway_centerline_m, "start")
-    entry_xy = (entry_pt_m.x, entry_pt_m.y)
-    to_field = straight_or_vertex_avoid(p0_xy, entry_xy, nfz_prepared)
-
-    # 2) Возврат: от exit к выбранному торцу ВПП
-    target_end = _pick_runway_point(runway_centerline_m, options.return_to)
-    exit_xy = (exit_pt_m.x, exit_pt_m.y)
-    back_home = straight_or_vertex_avoid(exit_xy, target_end, nfz_prepared)
-
+    paths = ompl_simple_runway_swath(
+        runway=(runway_m.coords[0], runway_m.coords[1]),
+        first_swath=(first_swath.coords[0], first_swath.coords[1]),
+        last_swath=(last_swath.coords[0], last_swath.coords[1]),
+        Rmin=turn_r,
+        margin_factor=6.0,
+        time_limit=0.9,
+        simplify_time=0.9,
+        range_factor=4.0,
+        interp_n=800
+    )
+    to_field, back_home = LineString(paths["to_swath_start"]), LineString(paths["to_runway_end"])
     return to_field, back_home
 
 
@@ -117,9 +117,10 @@ class TransitResult:
 
 
 def build_transit_full(
-    runway_centerline_m: LineString,
-    entry_pt_m: Point,
-    exit_pt_m: Point,
+    runway_m: LineString,
+    first_swath: LineString,
+    last_swath: LineString,
+    turn_r: float,
     nfz_polys_m: Sequence[Polygon],
     return_to: ReturnEnd = "start",
     nfz_safety_buffer_m: float = 0.0,
@@ -129,5 +130,5 @@ def build_transit_full(
     """
     opts = TransitOptions(return_to=return_to, nfz_safety_buffer_m=nfz_safety_buffer_m)
     nfz_prepared = _prepare_nfz(nfz_polys_m, nfz_safety_buffer_m)
-    to_field, back_home = build_transit(runway_centerline_m, entry_pt_m, exit_pt_m, nfz_prepared, opts)
+    to_field, back_home = build_transit(runway_m, first_swath, last_swath, turn_r, nfz_prepared, opts)
     return TransitResult(to_field=to_field, back_home=back_home, nfz_used=nfz_prepared)

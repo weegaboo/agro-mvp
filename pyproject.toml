@@ -10,7 +10,8 @@ dependencies = [
   "folium",
   "shapely>=2.0",
   "pyproj",
-  "numpy"
+  "numpy",
+  "ompl>=1.7.0",
 ]
 
 [tool.uv]

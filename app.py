@@ -330,11 +330,12 @@ def build_route_from_file(project_path: str):
     # транзиты (простая эвристика обхода NFZ)
     log("✈️ Строим долёт/возврат (простая эвристика обхода NFZ, буфер 10 м)")
     trans = build_transit_full(
-        runway_centerline_m=runway_m,
-        entry_pt_m=cover.entry_pt,
-        exit_pt_m=cover.exit_pt,
+        runway_m=runway_m,
+        first_swath=cover.swaths[0],
+        last_swath=cover.swaths[-1],
         nfz_polys_m=nfz_m,
         return_to="start",
+        turn_r=turn_r,
         nfz_safety_buffer_m=10.0
     )
     log("✅ Транзиты построены")
