@@ -4,9 +4,11 @@ from typing import List, Dict, Any, Optional
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
+from pyproj import Geod
 
 from shapely.geometry import shape, Point, LineString, Polygon, mapping
 from shapely.ops import unary_union
+from math import radians, atan2, cos, sin, tan
 
 # наши модули
 from geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
@@ -14,6 +16,10 @@ from route.cover_f2c import build_cover            # ТЕПЕРЬ покрыти
 from route.transit import build_transit_full       # простая эвристика долёта/возврата
 from metrics.estimates import estimate_mission, EstimateOptions
 
+from route.landing_and_takeoff import build_wpl_from_local_route
+
+
+_geod = Geod(ellps="WGS84")
 st.set_page_config(page_title="AgroRoute — F2C cover", layout="wide")
 st.title("AgroRoute — рисование → Сохранить → Построить (F2C внутри поля)")
 
@@ -133,6 +139,115 @@ def build_qgc_wpl(points_wgs: List[Point], *, alt_agl: float, speed_ms: float, i
     return "\n".join(lines)
 
 
+def _m_per_deg(lat_deg: float):
+    # приближённые метры в градус широты/долготы у заданной широты
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = m_per_deg_lat * cos(radians(lat_deg))
+    return m_per_deg_lat, m_per_deg_lon if m_per_deg_lon > 1e-6 else 1e-6
+
+def _bearing_rad(a: Point, b: Point) -> float:
+    # a,b: Point(lon,lat). Возврат: курс (рад) из a в b.
+    lat = (a.y + b.y) * 0.5
+    mpl, mplon = _m_per_deg(lat)
+    dx = (b.x - a.x) * mplon
+    dy = (b.y - a.y) * mpl
+    return atan2(dx, dy)  # восток=+90°, север=0°
+
+def _ll_offset(a: Point, brg_rad: float, dist_m: float) -> Point:
+    mpl, mplon = _m_per_deg(a.y)
+    dlat = (dist_m * cos(brg_rad)) / mpl
+    dlon = (dist_m * (atan2(0,1)*2/360) * 0)  # placeholder to keep IDE happy
+    dlon = (dist_m * (atan2(0,1)*2/360) * 0)  # (not used)
+    # корректно:
+    dlon = (dist_m * sin(brg_rad)) / mplon if mplon > 1e-6 else 0.0
+    return Point(a.x + dlon, a.y + dlat)
+
+def build_wpl_takeoff_route_land(
+    *,
+    runway_start_wgs: Point,          # порог ВПП (LAND точка и TAKEOFF)
+    runway_end_wgs:   Point,          # второй конец ВПП (для курса)
+    route_points_wgs: List[Point],    # ваш маршрут (Runway -> поле -> обратно -> к FAF)
+    cruise_alt_agl:   float,          # высота для маршрута (AGL), м
+    speed_ms:         float = 18.0,   # DO_CHANGE_SPEED (м/с)
+    takeoff_alt_agl:  float = 10.0,   # высота завершения NAV_TAKEOFF, м
+    roll_distance_m:  float = 150.0,  # отступ по оси до первой WP после TAKEOFF, м
+    faf_alt_agl:      float = 60.0,   # высота FAF, м
+    glide_angle_deg:  float = 4.0,    # угол глиссады, град
+    min_faf_distance_m: float = 400.0,# минимальная дальность FAF, м
+    include_midpoint: bool = False,   # опциональная точка посередине ВПП
+    mid_fraction:     float = 0.5,    # где её ставить (0..1)
+    include_rtl:      bool = True     # добавить RTL в самом конце
+) -> str:
+    """
+    Возвращает текст QGC WPL 110:
+      1) NAV_TAKEOFF @ runway_start
+      2) DO_CHANGE_SPEED
+      3) (опц.) MID-WP посередине ВПП на cruise_alt_agl
+      4) первая WP на оси через roll_distance_m, alt=cruise_alt_agl
+      5) ваш маршрут (каждая точка alt=cruise_alt_agl)
+      6) DO_LAND_START @ FAF
+      7) FAF-WP @ alt=faf_alt_agl (последний WP перед заходом)
+      8) NAV_LAND @ runway_start (alt=0)
+      9) (опц.) RTL
+    FRAME = 3 (GLOBAL_RELATIVE_ALT), AUTO=1.
+    """
+    lines = ["QGC WPL 110"]
+    FRAME = 3
+    AUTO = 1
+    seq = 0
+
+    rw_brg = _bearing_rad(runway_start_wgs, runway_end_wgs)
+    brg_back = (rw_brg + 3.141592653589793) % (2*3.141592653589793)
+
+    # 1) TAKEOFF в пороге
+    lat0, lon0 = runway_start_wgs.y, runway_start_wgs.x
+    # 22 TAKEOFF: p1=минимальный угол (0 → использовать параметры), x=lat, y=lon, z=alt
+    lines.append(f"{seq} 1 {FRAME} 22 0 0 0 0 {lat0:.7f} {lon0:.7f} {takeoff_alt_agl:.2f} {AUTO}"); seq += 1
+
+    # 2) DO_CHANGE_SPEED
+    lines.append(f"{seq} 0 {FRAME} 178 0 {speed_ms:.3f} 0 0 0 0 0 {AUTO}"); seq += 1
+
+    # 3) (опц.) mid-WP на оси ВПП
+    if include_midpoint:
+        # расстояние по прямой между порогами:
+        latm = (runway_start_wgs.y + runway_end_wgs.y) * 0.5
+        mpl, mplon = _m_per_deg(latm)
+        dx = (runway_end_wgs.x - runway_start_wgs.x) * mplon
+        dy = (runway_end_wgs.y - runway_start_wgs.y) * mpl
+        Lrw = (dx*dx + dy*dy) ** 0.5
+        mid_s = max(0.0, min(1.0, mid_fraction)) * Lrw
+        mid_pt = _ll_offset(runway_start_wgs, rw_brg, mid_s)
+        lines.append(f"{seq} 0 {FRAME} 16 0 0 0 0 {mid_pt.y:.7f} {mid_pt.x:.7f} {cruise_alt_agl:.2f} {AUTO}"); seq += 1
+
+    # 4) первая WP после TAKEOFF — на оси + roll_distance_m
+    tko_wp = _ll_offset(runway_start_wgs, rw_brg, roll_distance_m)
+    lines.append(f"{seq} 0 {FRAME} 16 0 0 0 0 {tko_wp.y:.7f} {tko_wp.x:.7f} {cruise_alt_agl:.2f} {AUTO}"); seq += 1
+
+    # 5) ваш маршрут (alt=cruise_alt_agl)
+    for pt in route_points_wgs:
+        lines.append(f"{seq} 0 {FRAME} 16 0 0 0 0 {pt.y:.7f} {pt.x:.7f} {cruise_alt_agl:.2f} {AUTO}"); seq += 1
+
+    # 6–7) FAF и DO_LAND_START
+    # теоретическая дальность под данный угол
+    ground_need = faf_alt_agl / max(tan(radians(glide_angle_deg)), 1e-6)
+    S_faf = max(ground_need, min_faf_distance_m)
+    faf_wp = _ll_offset(runway_start_wgs, brg_back, S_faf)
+
+    # DO_LAND_START (189) — как маркер посадочной секвенции (перед FAF)
+    lines.append(f"{seq} 0 {FRAME} 189 0 0 0 0 {faf_wp.y:.7f} {faf_wp.x:.7f} {faf_alt_agl:.2f} {AUTO}"); seq += 1
+    # FAF как обычный WAYPOINT
+    lines.append(f"{seq} 0 {FRAME} 16 0 0 0 0 {faf_wp.y:.7f} {faf_wp.x:.7f} {faf_alt_agl:.2f} {AUTO}"); seq += 1
+
+    # 8) NAV_LAND @ runway_start (alt=0)
+    lines.append(f"{seq} 0 {FRAME} 21 0 0 0 0 {lat0:.7f} {lon0:.7f} 0 {AUTO}"); seq += 1
+
+    # 9) (опц.) RTL
+    if include_rtl:
+        lines.append(f"{seq} 0 {FRAME} 20 0 0 0 0 0 0 0 {AUTO}"); seq += 1
+
+    return "\n".join(lines)
+
+
 def sample_linestring_m(ls_m: LineString, step_m: float) -> List[Point]:
     """Возвращает список точек (Point) через каждые step_m по длине LineString + последний узел."""
     if ls_m.is_empty:
@@ -171,15 +286,18 @@ def calc_runway_pose(runway_line: Dict[str, Any]):
     if len(coords) == 0:
         return None
     start_lon, start_lat = coords[0]
-    heading_deg = 0.0
+    heading_deg, runway_length = 0.0, 0.0
     if len(coords) >= 2:
         (x0, y0), (x1, y1) = coords[0], coords[1]
         heading_rad = math.atan2(y1 - y0, x1 - x0)
         heading_deg = (math.degrees(heading_rad) + 360) % 360
+        lon1, lat1 = coords[0]
+        lon2, lat2 = coords[1]
+        _, _, runway_length = _geod.inv(lon1, lat1, lon2, lat2)
     return {
         "type": "Feature",
         "geometry": {"type": "Point", "coordinates": [start_lon, start_lat]},
-        "properties": {"heading_deg": heading_deg}
+        "properties": {"heading_deg": heading_deg, "length": runway_length},
     }
 
 def sprayed_polygon(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> Optional[Polygon]:
@@ -238,7 +356,8 @@ if runway_gj:
         lat = rp["geometry"]["coordinates"][1]
         lon = rp["geometry"]["coordinates"][0]
         hdg = rp["properties"]["heading_deg"]
-        st.info(f"Старт (виртуально): lat {lat:.6f}, lon {lon:.6f} • курс ≈ {hdg:.1f}°")
+        runway_length = rp["properties"]["length"]
+        st.info(f"Старт (виртуально): lat {lat:.6f}, lon {lon:.6f} • курс ≈ {hdg:.1f}°, len: {runway_length}")
 
 # =============== СОХРАНЕНИЕ / ПРОСМОТР ФАЙЛА ===============
 payload = {
@@ -367,6 +486,8 @@ def build_route_from_file(project_path: str):
     # в WGS для отображения
     to_field_wgs   = to_wgs_geom(trans.to_field, ctx)
     back_home_wgs  = to_wgs_geom(trans.back_home, ctx)
+    takeoff_cfg = trans.takeoff_cfg
+    landing_cfg = trans.landing_cfg
     cover_path_wgs = to_wgs_geom(cover.cover_path, ctx)
     swaths_wgs     = [to_wgs_geom(s, ctx) for s in cover.swaths]
     sprayed_wgs    = to_wgs_geom(sprayed_m, ctx) if sprayed_m is not None else None
@@ -382,6 +503,11 @@ def build_route_from_file(project_path: str):
             "sprayed": mapping(sprayed_wgs) if sprayed_wgs is not None else None,
             "field": mapping(field_wgs),
             "nfz": [mapping(g) for g in nfz_wgs],
+
+        },
+        "config": {
+            "takeoff_cfg": takeoff_cfg,
+            "landing_cfg": landing_cfg,
         },
         "metrics": {
             "length_total_m": est.length_total_m,
@@ -565,74 +691,81 @@ if route and export_btn:
 
 # ======= ЭКСПОРТ В MISSION PLANNER (.waypoints) =======
 if route and mp_export_btn:
-    try:
-        # Нам нужен контекст CRS для метрической дискретизации
-        if not os.path.exists(project_file):
-            st.error("Файл проекта не найден — не могу определить проекцию.")
+    # Нам нужен контекст CRS для метрической дискретизации
+    if not os.path.exists(project_file):
+        st.error("Файл проекта не найден — не могу определить проекцию.")
+    else:
+        with open(project_file, "r", encoding="utf-8") as f:
+            data_for_ctx = json.load(f)
+        ge = data_for_ctx.get("geoms", {})
+        field_for_ctx = ge.get("field")
+        runway_for_ctx = ge.get("runway_centerline")
+        nfz_for_ctx = ge.get("nfz", []) or []
+        if not field_for_ctx or not runway_for_ctx:
+            st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
         else:
-            with open(project_file, "r", encoding="utf-8") as f:
-                data_for_ctx = json.load(f)
-            ge = data_for_ctx.get("geoms", {})
-            field_for_ctx = ge.get("field")
-            runway_for_ctx = ge.get("runway_centerline")
-            nfz_for_ctx = ge.get("nfz", []) or []
-            if not field_for_ctx or not runway_for_ctx:
-                st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
+            # CRS
+            ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+
+            # Берём линии маршрута из session_state (в WGS), переводим в метры
+            def _wgs_ls_to_m(ls_gj):
+                return to_utm_geom(shape(ls_gj), ctx)
+
+            to_field_m  = _wgs_ls_to_m(route["geo"]["to_field"])
+            cover_m     = _wgs_ls_to_m(route["geo"]["cover_path"])
+            back_home_m = _wgs_ls_to_m(route["geo"]["back_home"])
+
+            # Дискретизация
+            step = float(mp_step_m)
+            pts_to   = sample_linestring_m(to_field_m,  step)
+            pts_cov  = sample_linestring_m(cover_m,     step)
+            pts_back = sample_linestring_m(back_home_m, step)
+
+            # Склейка точек: to_field -> cover -> back_home
+            pts_all_m = pts_to + pts_cov + pts_back
+            if not pts_all_m:
+                st.error("Нет точек для экспорта.")
             else:
-                # CRS
-                ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+                # Переводим в WGS84
+                pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
 
-                # Берём линии маршрута из session_state (в WGS), переводим в метры
-                def _wgs_ls_to_m(ls_gj):
-                    return to_utm_geom(shape(ls_gj), ctx)
+                # Строим .waypoints
+                # wpl_text = build_qgc_wpl(
+                #     pts_all_wgs,
+                #     alt_agl=float(mp_alt_agl),
+                #     speed_ms=float(mp_speed_ms),
+                #     include_takeoff=True,
+                #     include_rtl=True
+                # )
+                runway_m = to_utm_geom(shape(runway_for_ctx), ctx)
+                runway_start_wgs = Point(runway_m.coords[0])
 
-                to_field_m  = _wgs_ls_to_m(route["geo"]["to_field"])
-                cover_m     = _wgs_ls_to_m(route["geo"]["cover_path"])
-                back_home_m = _wgs_ls_to_m(route["geo"]["back_home"])
+                wpl_text = build_wpl_from_local_route(
+                    runway_m=runway_m,
+                    route_points_m=pts_all_m,  # точки маршрута от CCA до FAF (включая поле)
+                    ctx=ctx,
+                    takeoff_cfg=route["config"]["takeoff_cfg"],
+                    landing_cfg=route["config"]["landing_cfg"]
+                )
 
-                # Дискретизация
-                step = float(mp_step_m)
-                pts_to   = sample_linestring_m(to_field_m,  step)
-                pts_cov  = sample_linestring_m(cover_m,     step)
-                pts_back = sample_linestring_m(back_home_m, step)
+                # Сохраняем и отдаём
+                export_dir = "data/exports"
+                os.makedirs(export_dir, exist_ok=True)
+                base = (mp_filename.strip() or f"{project_name}_mission").replace(" ", "_")
+                wpl_path = os.path.join(export_dir, f"{base}.waypoints")
+                with open(wpl_path, "w", encoding="utf-8") as f:
+                    f.write(wpl_text)
 
-                # Склейка точек: to_field -> cover -> back_home
-                pts_all_m = pts_to + pts_cov + pts_back
-                if not pts_all_m:
-                    st.error("Нет точек для экспорта.")
-                else:
-                    # Переводим в WGS84
-                    pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
-
-                    # Строим .waypoints
-                    wpl_text = build_qgc_wpl(
-                        pts_all_wgs,
-                        alt_agl=float(mp_alt_agl),
-                        speed_ms=float(mp_speed_ms),
-                        include_takeoff=True,
-                        include_rtl=True
+                with open(wpl_path, "rb") as fh:
+                    st.download_button(
+                        "⬇️ Mission Planner (.waypoints)",
+                        fh,
+                        file_name=os.path.basename(wpl_path),
+                        mime="text/plain",
+                        use_container_width=True
                     )
+                st.success(f"Готово: {wpl_path}")
 
-                    # Сохраняем и отдаём
-                    export_dir = "data/exports"
-                    os.makedirs(export_dir, exist_ok=True)
-                    base = (mp_filename.strip() or f"{project_name}_mission").replace(" ", "_")
-                    wpl_path = os.path.join(export_dir, f"{base}.waypoints")
-                    with open(wpl_path, "w", encoding="utf-8") as f:
-                        f.write(wpl_text)
-
-                    with open(wpl_path, "rb") as fh:
-                        st.download_button(
-                            "⬇️ Mission Planner (.waypoints)",
-                            fh,
-                            file_name=os.path.basename(wpl_path),
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                    st.success(f"Готово: {wpl_path}")
-
-    except Exception as e:
-        st.error(f"Ошибка экспорта в Mission Planner: {e}")
 
 # =============== ЛОГИ ===============
 if st.session_state["build_log"]:

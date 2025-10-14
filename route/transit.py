@@ -17,8 +17,8 @@ route/transit.py — построение транзита: ВПП -> entry, exi
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Literal, Sequence, Tuple
-
+from typing import Literal, Sequence, Tuple, Dict
+import math
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
@@ -28,7 +28,8 @@ from geo.utils import (
     buffer_many,
     line_endpoints,
 )
-from route.ompl_simple_transit import ompl_simple_runway_swath
+from route.ompl_simple_transit import ompl_simple_runway_swath, ompl_start_end_points_swath
+from route.landing_and_takeoff import build_takeoff_anchor, build_landing_anchor, TakeoffConfig, LandingConfig
 
 
 ReturnEnd = Literal["start", "end"]
@@ -46,7 +47,7 @@ class TransitOptions:
 
 
 def _pick_runway_point(centerline: LineString, where: ReturnEnd) -> Tuple[float, float]:
-    """Возвращает координату (x,y) начала или конца оси ВПП (в UTM)."""
+    """Возвращает координату (x, y) начала или конца оси ВПП (в UTM)."""
     p0, p1 = line_endpoints(centerline)
     return p0 if where == "start" else p1
 
@@ -69,8 +70,14 @@ def _prepare_nfz(nfz_polys_m: Sequence[Polygon], safety_buffer_m: float) -> list
     return list(nfz_polys_m)
 
 
+def heading(a: Tuple[float,float], b: Tuple[float,float]) -> float:
+    return math.atan2(b[1]-a[1], b[0]-a[0])
+
+
 def build_transit(
     runway_m: LineString,
+    begin_at_runway_end: Tuple[float,float],
+    back_to_runway_end: Tuple[float,float],
     first_swath: LineString,
     last_swath: LineString,
     turn_r: float,
@@ -91,17 +98,26 @@ def build_transit(
     # подготовим NFZ (с буфером безопасности)
     nfz_prepared = _prepare_nfz(nfz_polys_m, options.nfz_safety_buffer_m)
 
-    paths = ompl_simple_runway_swath(
+    paths = ompl_start_end_points_swath(
         runway=(runway_m.coords[0], runway_m.coords[1]),
+        begin_at_runway_end=begin_at_runway_end,
+        back_to_runway_end=back_to_runway_end,
         first_swath=(first_swath.coords[0], first_swath.coords[1]),
         last_swath=(last_swath.coords[0], last_swath.coords[1]),
         Rmin=turn_r,
-        margin_factor=6.0,
-        time_limit=0.9,
-        simplify_time=0.9,
-        range_factor=4.0,
-        interp_n=800
     )
+
+    # paths = ompl_simple_runway_swath(
+    #     runway=(runway_m.coords[0], runway_m.coords[1]),
+    #     first_swath=(first_swath.coords[0], first_swath.coords[1]),
+    #     last_swath=(last_swath.coords[0], last_swath.coords[1]),
+    #     Rmin=turn_r,
+    #     margin_factor=6.0,
+    #     time_limit=0.9,
+    #     simplify_time=0.9,
+    #     range_factor=4.0,
+    #     interp_n=800
+    # )
     to_field, back_home = LineString(paths["to_swath_start"]), LineString(paths["to_runway_end"])
     return to_field, back_home
 
@@ -114,6 +130,8 @@ class TransitResult:
     to_field: LineString
     back_home: LineString
     nfz_used: list[Polygon]
+    takeoff_cfg: Dict
+    landing_cfg: Dict
 
 
 def build_transit_full(
@@ -130,5 +148,22 @@ def build_transit_full(
     """
     opts = TransitOptions(return_to=return_to, nfz_safety_buffer_m=nfz_safety_buffer_m)
     nfz_prepared = _prepare_nfz(nfz_polys_m, nfz_safety_buffer_m)
-    to_field, back_home = build_transit(runway_m, first_swath, last_swath, turn_r, nfz_prepared, opts)
-    return TransitResult(to_field=to_field, back_home=back_home, nfz_used=nfz_prepared)
+    begin_at_runway_end, takeoff_cfg = build_takeoff_anchor(runway_m)
+    back_to_runway_end, landing_cfg = build_landing_anchor(runway_m)
+    to_field, back_home = build_transit(
+        runway_m=runway_m,
+        begin_at_runway_end=(begin_at_runway_end.x, begin_at_runway_end.y),
+        back_to_runway_end=(back_to_runway_end.x, back_to_runway_end.y),
+        first_swath=first_swath,
+        last_swath=last_swath,
+        turn_r=turn_r,
+        nfz_polys_m=nfz_prepared,
+        options=opts
+    )
+    return TransitResult(
+        to_field=to_field,
+        back_home=back_home,
+        nfz_used=nfz_prepared,
+        takeoff_cfg=takeoff_cfg,
+        landing_cfg=landing_cfg
+    )
