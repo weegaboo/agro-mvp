@@ -455,7 +455,6 @@ def build_route_from_file(project_path: str):
         nfz_polys_m=nfz_m,
         return_to="start",
         turn_r=turn_r,
-        nfz_safety_buffer_m=10.0
     )
     log("✅ Транзиты построены")
 

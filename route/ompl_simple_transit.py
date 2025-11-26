@@ -86,53 +86,6 @@ def plan_pose_to_pose(
     path = simplify(space, path, simplify_time=simplify_time, interp_n=interp_n)
     return path_to_xy(path)
 
-# ---------- публичная обёртка ----------
-def ompl_simple_runway_swath(
-    runway: Tuple[Tuple[float,float], Tuple[float,float]],
-    first_swath: Tuple[Tuple[float,float], Tuple[float,float]],
-    last_swath: Tuple[Tuple[float,float], Tuple[float,float]],
-    Rmin: float,
-    margin_factor: float = 6.0,     # во сколько Rmin расширяем границы (XY)
-    time_limit: float = 0.9,        # время на планирование каждого плеча
-    simplify_time: float = 0.8,     # время шорткатов
-    range_factor: float = 3.0,      # длина ребра графа ≈ range_factor*Rmin
-    interp_n: int = 700             # плотность отрисовки пути
-) -> Dict[str, List[Tuple[float,float]]]:
-    # курсы целей (здесь — минимальная логика: курс цели = вдоль соответствующей линии)
-    yaw_start_runway = heading(runway[0], runway[1])
-    yaw_first_swath = heading(first_swath[0], first_swath[1])
-    yaw_back_to_runway = heading(runway[1], runway[0])
-    yaw_last_swath = heading(last_swath[0], last_swath[1])
-
-    # старт/цели
-    start1 = (runway[1][0], runway[1][1], yaw_start_runway)     # взлёт: конец ВПП, курс ВПП
-    goal1  = (first_swath[0][0], first_swath[0][1], yaw_first_swath)    # прилёт: начало сваты, курс вдоль сваты
-
-    start2 = (last_swath[1][0], last_swath[1][1], yaw_last_swath)        # вылет с конца сваты, курс вдоль сваты
-    goal2  = (runway[1][0], runway[1][1], yaw_back_to_runway)     # посадка в конец ВПП, курс ВПП
-
-    # общие границы поиска
-    key_pts = [runway[0], runway[1], first_swath[0], last_swath[1]]
-    diag = math.hypot(max(p[0] for p in key_pts)-min(p[0] for p in key_pts),
-                      max(p[1] for p in key_pts)-min(p[1] for p in key_pts))
-    margin = max(margin_factor*Rmin, 0.1*diag)  # не слишком тесно и не слишком широко
-    bnds = bounds_xy(key_pts, margin)
-
-    # планируем два плеча
-    xy1 = plan_pose_to_pose(start1, goal1, Rmin, bnds,
-                            time_limit=time_limit, range_hint=range_factor*Rmin,
-                            simplify_time=simplify_time, interp_n=interp_n)
-    if xy1 is None:
-        raise RuntimeError("Не удалось спланировать маршрут: runway_end → swath_start. Увеличь time_limit или margin_factor.")
-
-    xy2 = plan_pose_to_pose(start2, goal2, Rmin, bnds,
-                            time_limit=time_limit, range_hint=range_factor*Rmin,
-                            simplify_time=simplify_time, interp_n=interp_n)
-    if xy2 is None:
-        raise RuntimeError("Не удалось спланировать маршрут: swath_end → runway_end. Увеличь time_limit или margin_factor.")
-
-    return {"to_swath_start": xy1, "to_runway_end": xy2}
-
 
 def ompl_start_end_points_swath(
     runway: Tuple[Tuple[float,float], Tuple[float,float]],

@@ -28,7 +28,8 @@ from geo.utils import (
     buffer_many,
     line_endpoints,
 )
-from route.ompl_simple_transit import ompl_simple_runway_swath, ompl_start_end_points_swath
+from route.ompl_simple_transit import ompl_start_end_points_swath
+from route.ompl_nfz_transit import ompl_start_end_points_swath_nfz
 from route.landing_and_takeoff import build_takeoff_anchor, build_landing_anchor, TakeoffConfig, LandingConfig
 
 
@@ -107,19 +108,66 @@ def build_transit(
         Rmin=turn_r,
     )
 
-    # paths = ompl_simple_runway_swath(
-    #     runway=(runway_m.coords[0], runway_m.coords[1]),
-    #     first_swath=(first_swath.coords[0], first_swath.coords[1]),
-    #     last_swath=(last_swath.coords[0], last_swath.coords[1]),
-    #     Rmin=turn_r,
-    #     margin_factor=6.0,
-    #     time_limit=0.9,
-    #     simplify_time=0.9,
-    #     range_factor=4.0,
-    #     interp_n=800
-    # )
     to_field, back_home = LineString(paths["to_swath_start"]), LineString(paths["to_runway_end"])
     return to_field, back_home
+
+
+def build_transit_with_nfz(
+    runway_m: LineString,
+    begin_at_runway_end: tuple[float, float],
+    back_to_runway_end: tuple[float, float],
+    first_swath: LineString,
+    last_swath: LineString,
+    turn_r: float,
+    nfz_polys_m: Sequence[Polygon],
+) -> tuple[LineString, LineString]:
+    """
+    Основная функция: строит (to_field, back_home) как LineString в UTM.
+
+    - to_field:   от конца ВПП (begin_at_runway_end) до first_swath
+    - back_home:  от last_swath до конца ВПП (back_to_runway_end)
+
+    Теперь транзит строится через OMPL (Dubins + RRT* + NFZ).
+    """
+
+    if runway_m is None or runway_m.is_empty:
+        raise ValueError("runway_m (runway_centerline) is required and must be non-empty")
+    if first_swath is None or first_swath.is_empty:
+        raise ValueError("first_swath is required and must be non-empty")
+    if last_swath is None or last_swath.is_empty:
+        raise ValueError("last_swath is required and must be non-empty")
+
+    # --- 1. Подготовим NFZ для OMPL: список списков координат [(x, y), ...]
+    #    (внешний контур каждого полигона, без буфера – буфер даём в options.nfz_safety_buffer_m)
+    nfz_polys_xy: list[list[tuple[float, float]]] = []
+    for poly in nfz_polys_m:
+        if poly is None or poly.is_empty:
+            continue
+        # берём внешний контур; ompl_start_end_points_swath замкнёт его сам через первую точку
+        coords = list(poly.exterior.coords)
+        # shapely даёт последовательность (x, y[, z]) – берем только x, y
+        nfz_polys_xy.append([(float(x), float(y)) for x, y, *rest in coords])
+
+    # (если тебе всё ещё нужно _prepare_nfz для других эвристик — оставь его вызов тут,
+    # но для OMPL мы используем nfz_polys_xy + safety_buffer)
+    # nfz_prepared = _prepare_nfz(nfz_polys_m, options.nfz_safety_buffer_m)
+
+    # --- 4. Вызываем OMPL-планирование ---
+    paths = ompl_start_end_points_swath_nfz(
+        runway=(runway_m.coords[0], runway_m.coords[1]),
+        begin_at_runway_end=begin_at_runway_end,
+        back_to_runway_end=back_to_runway_end,
+        first_swath=(first_swath.coords[0], first_swath.coords[1]),
+        last_swath=(last_swath.coords[0], last_swath.coords[1]),
+        nfz_polys=nfz_polys_xy,
+        Rmin=turn_r,
+    )
+
+    # --- 5. Конвертим обратно в LineString в UTM ---
+    to_field_ls  = LineString(paths["to_swath_start"])
+    back_home_ls = LineString(paths["to_runway_end"])
+
+    return to_field_ls, back_home_ls
 
 
 # ------------------------ удобная обёртка «всё сразу» ------------------------ #
@@ -140,30 +188,25 @@ def build_transit_full(
     last_swath: LineString,
     turn_r: float,
     nfz_polys_m: Sequence[Polygon],
-    return_to: ReturnEnd = "start",
-    nfz_safety_buffer_m: float = 0.0,
 ) -> TransitResult:
     """
     Удобный вызов: вернёт и линии транзита, и список NFZ, который реально использовался (с буфером).
     """
-    opts = TransitOptions(return_to=return_to, nfz_safety_buffer_m=nfz_safety_buffer_m)
-    nfz_prepared = _prepare_nfz(nfz_polys_m, nfz_safety_buffer_m)
     begin_at_runway_end, takeoff_cfg = build_takeoff_anchor(runway_m)
     back_to_runway_end, landing_cfg = build_landing_anchor(runway_m)
-    to_field, back_home = build_transit(
+    to_field, back_home = build_transit_with_nfz(
         runway_m=runway_m,
         begin_at_runway_end=(begin_at_runway_end.x, begin_at_runway_end.y),
         back_to_runway_end=(back_to_runway_end.x, back_to_runway_end.y),
         first_swath=first_swath,
         last_swath=last_swath,
         turn_r=turn_r,
-        nfz_polys_m=nfz_prepared,
-        options=opts
+        nfz_polys_m=nfz_polys_m,
     )
     return TransitResult(
         to_field=to_field,
         back_home=back_home,
-        nfz_used=nfz_prepared,
+        nfz_used=nfz_polys_m,
         takeoff_cfg=takeoff_cfg,
         landing_cfg=landing_cfg
     )
