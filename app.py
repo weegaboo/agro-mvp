@@ -453,7 +453,6 @@ def build_route_from_file(project_path: str):
         first_swath=cover.swaths[0],
         last_swath=cover.swaths[-1],
         nfz_polys_m=nfz_m,
-        return_to="start",
         turn_r=turn_r,
     )
     log("✅ Транзиты построены")
