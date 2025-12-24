@@ -17,6 +17,7 @@ from route.transit import build_transit_full       # простая эврист
 from metrics.estimates import estimate_mission, EstimateOptions
 
 from route.landing_and_takeoff import build_wpl_from_local_route
+from route.field_nfz import apply_overfly_alt_profile
 
 
 _geod = Geod(ellps="WGS84")
@@ -719,13 +720,17 @@ if route and mp_export_btn:
             pts_cov  = sample_linestring_m(cover_m,     step)
             pts_back = sample_linestring_m(back_home_m, step)
 
+            # nfz по полю
+            nfz_m = [to_utm_geom(shape(g), ctx) for g in nfz_for_ctx]
+            pts_cov = apply_overfly_alt_profile(path_pts=pts_cov, nfz_polys_m=nfz_m)
+
             # Склейка точек: to_field -> cover -> back_home
             pts_all_m = pts_to + pts_cov + pts_back
             if not pts_all_m:
                 st.error("Нет точек для экспорта.")
             else:
                 # Переводим в WGS84
-                pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
+                # pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
 
                 # Строим .waypoints
                 # wpl_text = build_qgc_wpl(
@@ -736,14 +741,14 @@ if route and mp_export_btn:
                 #     include_rtl=True
                 # )
                 runway_m = to_utm_geom(shape(runway_for_ctx), ctx)
-                runway_start_wgs = Point(runway_m.coords[0])
 
                 wpl_text = build_wpl_from_local_route(
                     runway_m=runway_m,
                     route_points_m=pts_all_m,  # точки маршрута от CCA до FAF (включая поле)
                     ctx=ctx,
                     takeoff_cfg=route["config"]["takeoff_cfg"],
-                    landing_cfg=route["config"]["landing_cfg"]
+                    landing_cfg=route["config"]["landing_cfg"],
+                    cruise_alt_agl=float(mp_alt_agl)
                 )
 
                 # Сохраняем и отдаём
