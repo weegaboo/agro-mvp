@@ -42,7 +42,7 @@ with st.sidebar:
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 200.0, 20.0, 1.0)
     turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
     headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
-    route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral"], index=0)
+    route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral", "straight_loops"], index=0)
     objective = st.selectbox(
         "Цель генератора сватов",
         ["n_swath", "swath_length", "field_coverage", "overlap"],
