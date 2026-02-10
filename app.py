@@ -42,6 +42,8 @@ with st.sidebar:
     st.header("Параметры самолёта / покрытия")
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 200.0, 20.0, 1.0)
     turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
+    mix_rate_l_per_ha = st.number_input("Расход смеси, л/га", 0.0, 200.0, 10.0, 0.5)
+    fuel_burn_l_per_km = st.number_input("Расход топлива, л/км", 0.0, 10.0, 0.35, 0.01)
     headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
     route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral", "straight_loops"], index=0)
     objective = st.selectbox(
@@ -351,6 +353,8 @@ payload = {
     "aircraft": {
         "spray_width_m": float(spray_width_m),
         "turn_radius_m": float(turn_radius_m),
+        "mix_rate_l_per_ha": float(mix_rate_l_per_ha),
+        "fuel_burn_l_per_km": float(fuel_burn_l_per_km),
         "headland_factor": float(headland_factor),
         "route_order": route_order,
         "objective": objective,
@@ -446,6 +450,9 @@ if route:
     c6.metric("Обработка, км",    f"{mtr['length_spray_m']/1000:.2f}")
     c7.metric("Площадь поля, га", f"{mtr['field_area_ha']:.3f}")
     c8.metric("Покрыто, га",      f"{mtr['sprayed_area_ha']:.3f}")
+    c9, c10 = st.columns(2)
+    c9.metric("Площадь поля, м²", f"{mtr['field_area_m2']:.1f}")
+    c10.metric("Покрыто, м²",     f"{mtr['sprayed_area_m2']:.1f}")
 
 
 # ======= ЭКСПОРТ МАРШРУТА (WGS84, с дискретизацией по шагу в метрах) =======

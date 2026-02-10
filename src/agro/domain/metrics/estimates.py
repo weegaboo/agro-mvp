@@ -5,7 +5,7 @@
 Как считается:
 - Длины: из LineString'ов (в UTM, м).
 - Время: разная скорость для транзита и обработки.
-- Топливо: burn_rate (л/ч) * время (ч).
+- Топливо: расход (л/км) * длина (км).
 - Удобрение: norm (л/га) * sprayed_area_ha, где sprayed_area_ha — площадь union
   буферов проходов (spray_width/2) обрезанных полем.
 
@@ -29,7 +29,7 @@ class EstimateOptions:
     spray_speed_ms: float = 15.0     # м/с на покрытии (≈54 км/ч)
 
     # ресурсы
-    fuel_burn_lph: float = 8.0       # л/ч расход топлива
+    fuel_burn_l_per_km: float = 0.35 # л/км расход топлива
     fert_rate_l_per_ha: float = 10.0 # л/га норма внесения
 
     # техника обработки
@@ -61,6 +61,8 @@ class EstimateResult:
     # площади
     field_area_ha: float
     sprayed_area_ha: float
+    field_area_m2: float
+    sprayed_area_m2: float
 
     # сырой breakdown (можно отобразить в UI при желании)
     extras: Dict[str, Any]
@@ -76,10 +78,14 @@ def _area_ha(pg: Optional[Polygon]) -> float:
     return 0.0 if pg is None or pg.is_empty else float(pg.area) / 10_000.0
 
 
+def _area_m2(pg: Optional[Polygon]) -> float:
+    return 0.0 if pg is None or pg.is_empty else float(pg.area)
+
+
 # ------------------------------ площадь покрытия ------------------------------ #
 
-def compute_sprayed_area_ha(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> float:
-    """Площадь фактического покрытия: union буферов линий (spray_width/2), обрезанный полем."""
+def compute_sprayed_area_m2(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> float:
+    """Площадь фактического покрытия (м2): union буферов линий (spray_width/2), обрезанный полем."""
     if not field_poly_m or field_poly_m.is_empty or not swaths:
         return 0.0
     half = max(spray_width_m, 0.0) / 2.0
@@ -91,7 +97,7 @@ def compute_sprayed_area_ha(field_poly_m: Polygon, swaths: List[LineString], spr
         return 0.0
     cover = unary_union(buffers)
     sprayed = cover.intersection(field_poly_m)
-    return _area_ha(sprayed)
+    return _area_m2(sprayed)
 
 
 # ------------------------------ основная функция ------------------------------ #
@@ -133,12 +139,15 @@ def estimate_mission(
     t_spray_min   = t_spray_h * 60.0
     t_total_min   = t_transit_min + t_spray_min
 
-    # топливо
-    fuel_l = opts.fuel_burn_lph * (t_transit_h + t_spray_h)
+    # топливо (по длине)
+    L_total_km = L_total / 1000.0
+    fuel_l = opts.fuel_burn_l_per_km * L_total_km
 
     # площадь поля / покрытая площадь
-    field_ha   = _area_ha(field_poly_m)
-    sprayed_ha = compute_sprayed_area_ha(field_poly_m, swaths, opts.spray_width_m)
+    field_m2 = _area_m2(field_poly_m)
+    sprayed_m2 = compute_sprayed_area_m2(field_poly_m, swaths, opts.spray_width_m)
+    field_ha = field_m2 / 10_000.0
+    sprayed_ha = sprayed_m2 / 10_000.0
 
     # удобрения (по норме на покрытую площадь)
     fert_l = opts.fert_rate_l_per_ha * sprayed_ha
@@ -161,11 +170,13 @@ def estimate_mission(
 
         field_area_ha = rnd(field_ha, opts.round_area_ha),
         sprayed_area_ha = rnd(sprayed_ha, opts.round_area_ha),
+        field_area_m2 = rnd(field_m2, 1),
+        sprayed_area_m2 = rnd(sprayed_m2, 1),
 
         extras = {
             "transit_speed_ms": opts.transit_speed_ms,
             "spray_speed_ms": opts.spray_speed_ms,
-            "fuel_burn_lph": opts.fuel_burn_lph,
+            "fuel_burn_l_per_km": opts.fuel_burn_l_per_km,
             "fert_rate_l_per_ha": opts.fert_rate_l_per_ha,
             "spray_width_m": opts.spray_width_m,
         }

@@ -110,11 +110,13 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         _log(log_fn, f"⚠️ Не удалось построить зону удобрения: {e}")
 
     # метрики
+    mix_l_per_ha = float(ac.get("mix_rate_l_per_ha", 10.0))
+    fuel_l_per_km = float(ac.get("fuel_burn_l_per_km", 0.35))
     opts = EstimateOptions(
         transit_speed_ms=20.0,
         spray_speed_ms=15.0,
-        fuel_burn_lph=8.0,
-        fert_rate_l_per_ha=10.0,
+        fuel_burn_l_per_km=fuel_l_per_km,
+        fert_rate_l_per_ha=mix_l_per_ha,
         spray_width_m=spray_w,
     )
     est = estimate_mission(
@@ -163,6 +165,8 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
             "fert_l": est.fert_l,
             "field_area_ha": est.field_area_ha,
             "sprayed_area_ha": est.sprayed_area_ha,
+            "field_area_m2": est.field_area_m2,
+            "sprayed_area_m2": est.sprayed_area_m2,
         },
     }
     _log(log_fn, "💾 Результат сформирован")
