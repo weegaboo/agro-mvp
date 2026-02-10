@@ -62,6 +62,17 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
     field_m = to_utm_geom(shape(field_gj_saved), ctx)
     runway_m = to_utm_geom(shape(runway_gj_saved), ctx)
     nfz_m = [to_utm_geom(shape(g), ctx) for g in nfz_gj_saved]
+    # NFZ внутри поля считаем "overfly allowed" -> исключаем из OMPL транзитов
+    nfz_blocking = []
+    for p in nfz_m:
+        try:
+            if p is not None and not p.is_empty and p.within(field_m):
+                continue
+        except Exception:
+            pass
+        nfz_blocking.append(p)
+    if nfz_m:
+        _log(log_fn, f"🧭 NFZ внутри поля (overfly): {len(nfz_m) - len(nfz_blocking)}; blocking: {len(nfz_blocking)}")
     _log(log_fn, "📐 Геометрии переведены в метры (UTM)")
 
     # покрытие поля — ТОЛЬКО F2C
@@ -103,7 +114,7 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
             runway_m=runway_m,
             swaths=cover.swaths,
             cover_path_m=cover.cover_path,
-            nfz_polys_m=nfz_m,
+            nfz_polys_m=nfz_blocking,
             turn_r=turn_r,
             total_capacity_l=total_capacity_l,
             fuel_reserve_l=fuel_reserve_l,
@@ -149,7 +160,7 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         runway_m=runway_m,
         first_swath=cover.swaths[0],
         last_swath=cover.swaths[-1],
-        nfz_polys_m=nfz_m,
+        nfz_polys_m=nfz_blocking,
         turn_r=turn_r,
     )
     takeoff_cfg = trans.takeoff_cfg

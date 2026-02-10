@@ -468,6 +468,55 @@ if route:
     c9.metric("Площадь поля, м²", f"{mtr['field_area_m2']:.1f}")
     c10.metric("Покрыто, м²",     f"{mtr['sprayed_area_m2']:.1f}")
 
+    # ======= Статистика по рейсам =======
+    trips = route["geo"].get("trips") or []
+    if trips:
+        st.subheader("Рейсы: загрузка и остатки")
+        ac = route.get("config", {}).get("aircraft", {})
+        total_capacity = float(ac.get("total_capacity_l", 0.0))
+        fuel_reserve = float(ac.get("fuel_reserve_l", 0.0))
+
+        rows = []
+        total_fuel_loaded = 0.0
+        total_mix_loaded = 0.0
+        total_fuel_used = 0.0
+        total_mix_used = 0.0
+
+        for idx, t in enumerate(trips, start=1):
+            fuel_used = float(t.get("fuel_used_l", 0.0))
+            mix_used = float(t.get("mix_used_l", 0.0))
+            fuel_loaded = max(0.0, fuel_used + fuel_reserve)
+            mix_loaded = max(0.0, total_capacity - fuel_loaded)
+            fuel_left = max(0.0, fuel_loaded - fuel_used)
+            mix_left = max(0.0, mix_loaded - mix_used)
+
+            total_fuel_loaded += fuel_loaded
+            total_mix_loaded += mix_loaded
+            total_fuel_used += fuel_used
+            total_mix_used += mix_used
+
+            rows.append(
+                {
+                    "Рейс": idx,
+                    "Сват (с)": t.get("start_idx", 0),
+                    "Сват (по)": t.get("end_idx", 0),
+                    "Загр. топливо, л": round(fuel_loaded, 2),
+                    "Загр. смесь, л": round(mix_loaded, 2),
+                    "Израсх. топливо, л": round(fuel_used, 2),
+                    "Израсх. смесь, л": round(mix_used, 2),
+                    "Остаток топлива, л": round(fuel_left, 2),
+                    "Остаток смеси, л": round(mix_left, 2),
+                }
+            )
+
+        st.dataframe(rows, use_container_width=True)
+
+        c11, c12, c13, c14 = st.columns(4)
+        c11.metric("Загружено топлива, л", f"{total_fuel_loaded:.1f}")
+        c12.metric("Загружено смеси, л", f"{total_mix_loaded:.1f}")
+        c13.metric("Израсх. топлива, л", f"{total_fuel_used:.1f}")
+        c14.metric("Израсх. смеси, л", f"{total_mix_used:.1f}")
+
 
 # ======= ЭКСПОРТ МАРШРУТА (WGS84, с дискретизацией по шагу в метрах) =======
 if route and export_btn:

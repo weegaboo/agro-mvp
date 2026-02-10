@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Sequence, Dict, Any, Optional
 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
+from shapely.prepared import prep
 
-from agro.domain.routing.transit import build_transit_with_nfz
+from agro.domain.routing.transit import build_transit_with_nfz, build_transit
 from agro.domain.routing.landing_and_takeoff import build_takeoff_anchor, build_landing_anchor
 
 
@@ -72,15 +73,51 @@ def split_into_trips(
         s = swaths[idx]
         begin_at, _ = build_takeoff_anchor(runway_m)
         back_to, _ = build_landing_anchor(runway_m)
-        to_field, back_home = build_transit_with_nfz(
-            runway_m=runway_m,
-            begin_at_runway_end=(begin_at.x, begin_at.y),
-            back_to_runway_end=(back_to.x, back_to.y),
-            first_swath=s,
-            last_swath=s,
-            turn_r=turn_r,
-            nfz_polys_m=nfz_polys_m,
-        )
+        try:
+            to_field, back_home = build_transit_with_nfz(
+                runway_m=runway_m,
+                begin_at_runway_end=(begin_at.x, begin_at.y),
+                back_to_runway_end=(back_to.x, back_to.y),
+                first_swath=s,
+                last_swath=s,
+                turn_r=turn_r,
+                nfz_polys_m=nfz_polys_m,
+            )
+        except RuntimeError:
+            # Если старт/цель внутри NFZ — исключаем такие зоны и пробуем снова.
+            safety_buffer = 30.0
+            start_pt = Point(s.coords[0])
+            end_pt = Point(s.coords[-1])
+            filtered = []
+            for poly in nfz_polys_m:
+                if poly is None or poly.is_empty:
+                    continue
+                p = poly.buffer(safety_buffer)
+                pr = prep(p)
+                if pr.contains(start_pt) or pr.contains(end_pt):
+                    continue
+                filtered.append(poly)
+            try:
+                to_field, back_home = build_transit_with_nfz(
+                    runway_m=runway_m,
+                    begin_at_runway_end=(begin_at.x, begin_at.y),
+                    back_to_runway_end=(back_to.x, back_to.y),
+                    first_swath=s,
+                    last_swath=s,
+                    turn_r=turn_r,
+                    nfz_polys_m=filtered,
+                )
+            except RuntimeError:
+                # Последний фолбэк — без NFZ
+                to_field, back_home = build_transit(
+                    runway_m=runway_m,
+                    begin_at_runway_end=(begin_at.x, begin_at.y),
+                    back_to_runway_end=(back_to.x, back_to.y),
+                    first_swath=s,
+                    last_swath=s,
+                    turn_r=turn_r,
+                    nfz_polys_m=[],
+                )
         transit_cache[idx] = {"to_field": to_field, "back_home": back_home}
         return transit_cache[idx]
 
