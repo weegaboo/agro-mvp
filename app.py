@@ -42,6 +42,8 @@ with st.sidebar:
     st.header("Параметры самолёта / покрытия")
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 200.0, 20.0, 1.0)
     turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
+    total_capacity_l = st.number_input("Общая ёмкость бака, л", 1.0, 10000.0, 200.0, 1.0)
+    fuel_reserve_l = st.number_input("Резерв топлива, л", 0.0, 500.0, 5.0, 0.5)
     mix_rate_l_per_ha = st.number_input("Расход смеси, л/га", 0.0, 200.0, 10.0, 0.5)
     fuel_burn_l_per_km = st.number_input("Расход топлива, л/км", 0.0, 10.0, 0.35, 0.01)
     headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
@@ -353,6 +355,8 @@ payload = {
     "aircraft": {
         "spray_width_m": float(spray_width_m),
         "turn_radius_m": float(turn_radius_m),
+        "total_capacity_l": float(total_capacity_l),
+        "fuel_reserve_l": float(fuel_reserve_l),
         "mix_rate_l_per_ha": float(mix_rate_l_per_ha),
         "fuel_burn_l_per_km": float(fuel_burn_l_per_km),
         "headland_factor": float(headland_factor),
@@ -429,10 +433,20 @@ if route:
     # маршруты
     folium.GeoJson(route["geo"]["cover_path"], name="Покрытие по полю",
                    style_function=lambda x: {"color":"#00aa00","weight":4}).add_to(m2)
-    folium.GeoJson(route["geo"]["to_field"],  name="Долёт",
-                   style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
-    folium.GeoJson(route["geo"]["back_home"], name="Возврат",
-                   style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+    trips = route["geo"].get("trips") or []
+    if trips:
+        for idx, t in enumerate(trips):
+            folium.GeoJson(t["to_field"],  name=f"Долёт #{idx+1}",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+            folium.GeoJson(t["back_home"], name=f"Возврат #{idx+1}",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+    else:
+        if route["geo"].get("to_field"):
+            folium.GeoJson(route["geo"]["to_field"],  name="Долёт",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+        if route["geo"].get("back_home"):
+            folium.GeoJson(route["geo"]["back_home"], name="Возврат",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
 
     folium.LayerControl(position="topleft", collapsed=False).add_to(m2)
     st_folium(m2, width="100%", height=560)

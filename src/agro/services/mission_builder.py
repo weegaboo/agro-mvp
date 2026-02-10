@@ -10,7 +10,8 @@ from shapely.ops import unary_union
 from agro.domain.geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
 from agro.infra.f2c.cover_f2c import build_cover
 from agro.domain.routing.transit import build_transit_full
-from agro.domain.metrics.estimates import estimate_mission, EstimateOptions
+from agro.domain.metrics.estimates import estimate_mission_from_lengths, EstimateOptions
+from agro.services.trip_splitter import split_into_trips, TripSplitError
 
 
 def _log(log_fn: Optional[Callable[[str], None]], msg: str) -> None:
@@ -90,16 +91,30 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
     )
     _log(log_fn, f"✅ Покрытие готово: swaths={len(cover.swaths)}, angle≈{cover.angle_used_deg:.1f}°")
 
-    # транзиты
-    _log(log_fn, "✈️ Строим долёт/возврат (простая эвристика обхода NFZ, буфер 10 м)")
-    trans = build_transit_full(
-        runway_m=runway_m,
-        first_swath=cover.swaths[0],
-        last_swath=cover.swaths[-1],
-        nfz_polys_m=nfz_m,
-        turn_r=turn_r,
-    )
-    _log(log_fn, "✅ Транзиты построены")
+    # рейсы
+    total_capacity_l = float(ac.get("total_capacity_l", 200.0))
+    fuel_reserve_l = float(ac.get("fuel_reserve_l", 5.0))
+    mix_l_per_ha = float(ac.get("mix_rate_l_per_ha", 10.0))
+    fuel_l_per_km = float(ac.get("fuel_burn_l_per_km", 0.35))
+
+    _log(log_fn, "✈️ Строим рейсы с дозаправкой (OMPL + NFZ)")
+    try:
+        trips_res = split_into_trips(
+            runway_m=runway_m,
+            swaths=cover.swaths,
+            cover_path_m=cover.cover_path,
+            nfz_polys_m=nfz_m,
+            turn_r=turn_r,
+            total_capacity_l=total_capacity_l,
+            fuel_reserve_l=fuel_reserve_l,
+            fuel_burn_l_per_km=fuel_l_per_km,
+            mix_rate_l_per_ha=mix_l_per_ha,
+            spray_width_m=spray_w,
+        )
+    except TripSplitError as e:
+        _log(log_fn, f"❌ Невозможно разбить на рейсы: {e}")
+        raise
+    _log(log_fn, f"✅ Рейсы построены: {len(trips_res.trips)}")
 
     # зона удобрения
     sprayed_m = None
@@ -119,21 +134,40 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         fert_rate_l_per_ha=mix_l_per_ha,
         spray_width_m=spray_w,
     )
-    est = estimate_mission(
+    est = estimate_mission_from_lengths(
         field_poly_m=field_m,
         swaths=cover.swaths,
         cover_path_m=cover.cover_path,
-        to_field_m=trans.to_field,
-        back_home_m=trans.back_home,
+        transit_length_m=trips_res.transit_length_m,
         opts=opts,
     )
     _log(log_fn, "📊 Метрики рассчитаны")
 
     # в WGS для отображения
-    to_field_wgs = to_wgs_geom(trans.to_field, ctx)
-    back_home_wgs = to_wgs_geom(trans.back_home, ctx)
+    # legacy: используем первую связку рейса для takeoff/landing конфигов
+    trans = build_transit_full(
+        runway_m=runway_m,
+        first_swath=cover.swaths[0],
+        last_swath=cover.swaths[-1],
+        nfz_polys_m=nfz_m,
+        turn_r=turn_r,
+    )
     takeoff_cfg = trans.takeoff_cfg
     landing_cfg = trans.landing_cfg
+
+    # в WGS для отображения рейсов
+    trips_geo = []
+    for t in trips_res.trips:
+        trips_geo.append(
+            {
+                "to_field": mapping(to_wgs_geom(t.to_field, ctx)),
+                "back_home": mapping(to_wgs_geom(t.back_home, ctx)),
+                "start_idx": t.start_idx,
+                "end_idx": t.end_idx,
+                "fuel_used_l": t.fuel_used_l,
+                "mix_used_l": t.mix_used_l,
+            }
+        )
     cover_path_wgs = to_wgs_geom(cover.cover_path, ctx)
     swaths_wgs = [to_wgs_geom(s, ctx) for s in cover.swaths]
     sprayed_wgs = to_wgs_geom(sprayed_m, ctx) if sprayed_m is not None else None
@@ -142,8 +176,9 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
 
     route = {
         "geo": {
-            "to_field": mapping(to_field_wgs),
-            "back_home": mapping(back_home_wgs),
+            "trips": trips_geo,
+            "to_field": trips_geo[0]["to_field"] if trips_geo else None,
+            "back_home": trips_geo[0]["back_home"] if trips_geo else None,
             "cover_path": mapping(cover_path_wgs),
             "swaths": [mapping(s) for s in swaths_wgs],
             "sprayed": mapping(sprayed_wgs) if sprayed_wgs is not None else None,
@@ -153,6 +188,14 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         "config": {
             "takeoff_cfg": takeoff_cfg,
             "landing_cfg": landing_cfg,
+            "aircraft": {
+                "total_capacity_l": total_capacity_l,
+                "fuel_reserve_l": fuel_reserve_l,
+                "mix_rate_l_per_ha": mix_l_per_ha,
+                "fuel_burn_l_per_km": fuel_l_per_km,
+                "spray_width_m": spray_w,
+                "turn_radius_m": turn_r,
+            },
         },
         "metrics": {
             "length_total_m": est.length_total_m,

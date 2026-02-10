@@ -182,3 +182,58 @@ def estimate_mission(
         }
     )
     return res
+
+
+def estimate_mission_from_lengths(
+    *,
+    field_poly_m: Polygon,
+    swaths: List[LineString],
+    cover_path_m: LineString,
+    transit_length_m: float,
+    opts: EstimateOptions = EstimateOptions(),
+) -> EstimateResult:
+    L_transit = float(max(0.0, transit_length_m))
+    L_spray = _len_m(cover_path_m)
+    L_total = L_transit + L_spray
+
+    t_transit_h = (L_transit / max(opts.transit_speed_ms, 0.1)) / 3600.0
+    t_spray_h = (L_spray / max(opts.spray_speed_ms, 0.1)) / 3600.0
+    t_transit_min = t_transit_h * 60.0
+    t_spray_min = t_spray_h * 60.0
+    t_total_min = t_transit_min + t_spray_min
+
+    L_total_km = L_total / 1000.0
+    fuel_l = opts.fuel_burn_l_per_km * L_total_km
+
+    field_m2 = _area_m2(field_poly_m)
+    sprayed_m2 = compute_sprayed_area_m2(field_poly_m, swaths, opts.spray_width_m)
+    field_ha = field_m2 / 10_000.0
+    sprayed_ha = sprayed_m2 / 10_000.0
+
+    fert_l = opts.fert_rate_l_per_ha * sprayed_ha
+
+    def rnd(x, nd):
+        return round(x, nd)
+
+    return EstimateResult(
+        length_total_m=rnd(L_total, opts.round_len_m),
+        length_transit_m=rnd(L_transit, opts.round_len_m),
+        length_spray_m=rnd(L_spray, opts.round_len_m),
+        time_total_min=rnd(t_total_min, opts.round_time_min),
+        time_transit_min=rnd(t_transit_min, opts.round_time_min),
+        time_spray_min=rnd(t_spray_min, opts.round_time_min),
+        fuel_l=rnd(fuel_l, opts.round_liters),
+        fert_l=rnd(fert_l, opts.round_liters),
+        field_area_ha=rnd(field_ha, opts.round_area_ha),
+        sprayed_area_ha=rnd(sprayed_ha, opts.round_area_ha),
+        field_area_m2=rnd(field_m2, 1),
+        sprayed_area_m2=rnd(sprayed_m2, 1),
+        extras={
+            "transit_speed_ms": opts.transit_speed_ms,
+            "spray_speed_ms": opts.spray_speed_ms,
+            "fuel_burn_l_per_km": opts.fuel_burn_l_per_km,
+            "fert_rate_l_per_ha": opts.fert_rate_l_per_ha,
+            "spray_width_m": opts.spray_width_m,
+            "transit_length_m_override": L_transit,
+        },
+    )
