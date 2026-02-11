@@ -1,3 +1,5 @@
+"""OMPL transit planning with no-fly zone constraints."""
+
 import math
 from typing import Tuple, List, Optional, Dict
 
@@ -10,12 +12,12 @@ from shapely.ops import unary_union
 
 
 def heading(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    """Курс из точки a в точку b."""
+    """Return heading angle (radians) from a to b."""
     return math.atan2(b[1] - a[1], b[0] - a[0])
 
 
 def bounds_xy(points: List[Tuple[float, float]], margin: float) -> ob.RealVectorBounds:
-    """Прямоугольные границы (min/max по X/Y) с отступом margin."""
+    """Compute bounding box for points with margin."""
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     b = ob.RealVectorBounds(2)
@@ -27,14 +29,14 @@ def bounds_xy(points: List[Tuple[float, float]], margin: float) -> ob.RealVector
 
 
 def make_space(Rmin: float, bnds: ob.RealVectorBounds) -> ob.DubinsStateSpace:
-    """Dubins-пространство SE(2) с минимальным радиусом разворота Rmin."""
+    """Create Dubins state space with bounds."""
     sp = ob.DubinsStateSpace(Rmin)
     sp.setBounds(bnds)
     return sp
 
 
 def make_state(space, x, y, yaw):
-    """Создать состояние (x, y, yaw) в Dubins-пространстве."""
+    """Create a Dubins state."""
     s = ob.State(space)
     s().setXY(float(x), float(y))
     s().setYaw(float(yaw))
@@ -42,7 +44,7 @@ def make_state(space, x, y, yaw):
 
 
 def path_to_xy(path: og.PathGeometric) -> List[Tuple[float, float]]:
-    """Преобразовать OMPL-путь в список точек (x, y)."""
+    """Convert OMPL path to list of XY coordinates."""
     out = []
     for st in path.getStates():
         out.append((st.getX(), st.getY()))
@@ -50,7 +52,7 @@ def path_to_xy(path: og.PathGeometric) -> List[Tuple[float, float]]:
 
 
 def _flatten_points(obstacles: List[List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
-    """Развернуть список полигонов в плоский список точек."""
+    """Flatten polygon list into a list of points."""
     flat = []
     for poly in obstacles:
         flat.extend(poly)
@@ -61,13 +63,7 @@ def make_nfz_checker(
     nfz_polys: List[List[Tuple[float, float]]],
     safety_buffer: float = 30.0
 ) -> ob.StateValidityCheckerFn:
-    """
-    Строит StateValidityCheckerFn, запрещающий состояния внутри no-fly зон.
-
-    nfz_polys: список полигонов, каждый — список вершин [(x1,y1), (x2,y2), ...]
-    safety_buffer: "надувание" полигона на указанное расстояние (м).
-                   Требует shapely; без shapely буфер игнорируется.
-    """
+    """Build an OMPL state validity checker for NFZ polygons."""
 
     # Если зон нет — все состояния валидны.
     if not nfz_polys:
@@ -96,10 +92,7 @@ def plan_pose_to_pose(
     safety_buffer: float = 0.0,
     validity_resolution: float = 0.005,
 ) -> Optional[List[Tuple[float, float]]]:
-    """
-    Планирование Dubins-маршрута от start до goal с учётом NFZ.
-    Возвращает список (x, y) или None, если не удалось найти путь.
-    """
+    """Plan a Dubins path between poses with NFZ constraints."""
 
     space = ob.DubinsStateSpace(Rmin)
     space.setBounds(bnds)
@@ -168,6 +161,7 @@ def ompl_start_end_points_swath_nfz(
     safety_buffer: float = 30.0,
     validity_resolution: float = 0.005,
 ) -> Dict[str, List[Tuple[float, float]]]:
+    """Plan runway-to-swath and swath-to-runway paths with NFZ."""
 
     yaw_start_runway = heading(runway[0], runway[1])
     yaw_first_swath = heading(first_swath[0], first_swath[1])

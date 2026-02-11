@@ -6,18 +6,13 @@ from streamlit_folium import st_folium
 import folium
 from pyproj import Geod
 
-from shapely.geometry import shape, Point, LineString, Polygon, mapping
-from shapely.ops import unary_union
+from shapely.geometry import Point, LineString
 from math import radians, atan2, cos, sin, tan
 
 # наши модули
-from geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
-from route.cover_f2c import build_cover            # ТЕПЕРЬ покрытие поля — только F2C
-from route.transit import build_transit_full       # простая эвристика долёта/возврата
-from metrics.estimates import estimate_mission, EstimateOptions
-
-from route.landing_and_takeoff import build_wpl_from_local_route
-from route.field_nfz import apply_overfly_alt_profile
+from agro.services.mission_builder import build_route_from_file
+from agro.services.exporter import export_route_geojson_csv
+from agro.services.mission_planner import export_mission_planner
 
 
 _geod = Geod(ellps="WGS84")
@@ -41,6 +36,10 @@ with st.sidebar:
     st.header("Параметры самолёта / покрытия")
     spray_width_m = st.number_input("Ширина захвата (м)", 1.0, 200.0, 20.0, 1.0)
     turn_radius_m = st.number_input("Мин. радиус разворота (м)", 1.0, 500.0, 40.0, 1.0)
+    total_capacity_l = st.number_input("Общая ёмкость бака, л", 1.0, 10000.0, 200.0, 1.0)
+    fuel_reserve_l = st.number_input("Резерв топлива, л", 0.0, 500.0, 5.0, 0.5)
+    mix_rate_l_per_ha = st.number_input("Расход смеси, л/га", 0.0, 200.0, 10.0, 0.5)
+    fuel_burn_l_per_km = st.number_input("Расход топлива, л/км", 0.0, 10.0, 0.35, 0.01)
     headland_factor = st.slider("Кромка (x ширины корпуса)", 0.0, 8.0, 3.0, 0.5)
     route_order = st.selectbox("Порядок обхода сватов", ["snake", "boustro", "spiral", "straight_loops"], index=0)
     objective = st.selectbox(
@@ -301,22 +300,6 @@ def calc_runway_pose(runway_line: Dict[str, Any]):
         "properties": {"heading_deg": heading_deg, "length": runway_length},
     }
 
-def sprayed_polygon(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> Optional[Polygon]:
-    """Зона удобрения как union буферов проходов (spray_width/2), обрезанный полем."""
-    if not field_poly_m or field_poly_m.is_empty or not swaths:
-        return None
-    half = max(spray_width_m, 0.0) / 2.0
-    if half <= 0.0:
-        return None
-    bufs = [ln.buffer(half, join_style=2, cap_style=2) for ln in swaths if ln and not ln.is_empty]
-    if not bufs:
-        return None
-    cover = unary_union(bufs)
-    sprayed = cover.intersection(field_poly_m)
-    if sprayed.is_empty:
-        return None
-    return sprayed
-
 # =============== КАРТА РИСОВАНИЯ (всегда сверху) ===============
 center = [55.75, 37.61]
 m = folium.Map(location=center, zoom_start=12, control_scale=True, tiles=None)
@@ -366,6 +349,10 @@ payload = {
     "aircraft": {
         "spray_width_m": float(spray_width_m),
         "turn_radius_m": float(turn_radius_m),
+        "total_capacity_l": float(total_capacity_l),
+        "fuel_reserve_l": float(fuel_reserve_l),
+        "mix_rate_l_per_ha": float(mix_rate_l_per_ha),
+        "fuel_burn_l_per_km": float(fuel_burn_l_per_km),
         "headland_factor": float(headland_factor),
         "route_order": route_order,
         "objective": objective,
@@ -393,136 +380,6 @@ if show_btn:
     else:
         st.error(f"Файл не найден: {project_file}")
 
-# =============== ПОСТРОЕНИЕ МАРШРУТА ИЗ ФАЙЛА ===============
-def build_route_from_file(project_path: str):
-    clear_log()
-    log(f"🟦 Старт построения из файла: {project_path}")
-
-    if not os.path.exists(project_path):
-        log("❌ Файл проекта не найден")
-        raise FileNotFoundError(f"Файл не найден: {project_path}")
-
-    with open(project_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    log("📥 JSON прочитан")
-
-    ge = data.get("geoms", {})
-    field_gj_saved = ge.get("field")
-    runway_gj_saved = ge.get("runway_centerline")
-    nfz_gj_saved = ge.get("nfz", []) or []
-    if not field_gj_saved or not runway_gj_saved:
-        log("❌ В файле нет поля или ВПП")
-        raise ValueError("В файле проекта нет поля или ВПП")
-
-    # CRS и метры
-    ctx = context_from_many_geojson([field_gj_saved, runway_gj_saved, *nfz_gj_saved])
-    log(f"🗺️ CRS выбран (UTM EPSG={ctx.epsg}, зона={ctx.zone}{ctx.hemisphere})")
-
-    field_m = to_utm_geom(shape(field_gj_saved), ctx)
-    runway_m = to_utm_geom(shape(runway_gj_saved), ctx)
-    nfz_m = [to_utm_geom(shape(g), ctx) for g in nfz_gj_saved]
-    log("📐 Геометрии переведены в метры (UTM)")
-
-    # покрытие поля — ТОЛЬКО F2C
-    ac = data.get("aircraft", {})
-    spray_w = float(ac.get("spray_width_m", 20.0))
-    turn_r  = float(ac.get("turn_radius_m", 40.0))
-    headland_factor = float(ac.get("headland_factor", 3.0))
-    objective = ac.get("objective", "n_swath")
-    route_order = ac.get("route_order", "snake")
-    use_cc = bool(ac.get("use_cc", True))
-
-    log(f"🌾 F2C покрытие: width={spray_w}м, Rmin={turn_r}м, headland={headland_factor}w, "
-        f"objective={objective}, order={route_order}, CC={use_cc}")
-
-    cover = build_cover(
-        field_poly_m=field_m,
-        runway_m=runway_m,
-        spray_width_m=spray_w,
-        headland_factor=headland_factor,
-        objective=objective,
-        route_order=route_order,
-        use_continuous_curvature=use_cc,
-        min_turn_radius_m=turn_r,
-    )
-    log(f"✅ Покрытие готово: swaths={len(cover.swaths)}, angle≈{cover.angle_used_deg:.1f}°")
-
-    # транзиты (простая эвристика обхода NFZ)
-    log("✈️ Строим долёт/возврат (простая эвристика обхода NFZ, буфер 10 м)")
-    trans = build_transit_full(
-        runway_m=runway_m,
-        first_swath=cover.swaths[0],
-        last_swath=cover.swaths[-1],
-        nfz_polys_m=nfz_m,
-        turn_r=turn_r,
-    )
-    log("✅ Транзиты построены")
-
-    # зона удобрения
-    sprayed_m = None
-    try:
-        sprayed_m = (sprayed_polygon(field_m, cover.swaths, spray_w) or None)
-        log("🟥 Зона удобрения рассчитана")
-    except Exception as e:
-        log(f"⚠️ Не удалось построить зону удобрения: {e}")
-
-    # метрики
-    opts = EstimateOptions(
-        transit_speed_ms=20.0, spray_speed_ms=15.0,
-        fuel_burn_lph=8.0, fert_rate_l_per_ha=10.0,
-        spray_width_m=spray_w,
-    )
-    est = estimate_mission(
-        field_poly_m=field_m,
-        swaths=cover.swaths,
-        cover_path_m=cover.cover_path,
-        to_field_m=trans.to_field,
-        back_home_m=trans.back_home,
-        opts=opts
-    )
-    log("📊 Метрики рассчитаны")
-
-    # в WGS для отображения
-    to_field_wgs   = to_wgs_geom(trans.to_field, ctx)
-    back_home_wgs  = to_wgs_geom(trans.back_home, ctx)
-    takeoff_cfg = trans.takeoff_cfg
-    landing_cfg = trans.landing_cfg
-    cover_path_wgs = to_wgs_geom(cover.cover_path, ctx)
-    swaths_wgs     = [to_wgs_geom(s, ctx) for s in cover.swaths]
-    sprayed_wgs    = to_wgs_geom(sprayed_m, ctx) if sprayed_m is not None else None
-    field_wgs      = shape(field_gj_saved)  # уже WGS
-    nfz_wgs        = [shape(g) for g in nfz_gj_saved]
-
-    st.session_state["route"] = {
-        "geo": {
-            "to_field": mapping(to_field_wgs),
-            "back_home": mapping(back_home_wgs),
-            "cover_path": mapping(cover_path_wgs),
-            "swaths": [mapping(s) for s in swaths_wgs],
-            "sprayed": mapping(sprayed_wgs) if sprayed_wgs is not None else None,
-            "field": mapping(field_wgs),
-            "nfz": [mapping(g) for g in nfz_wgs],
-
-        },
-        "config": {
-            "takeoff_cfg": takeoff_cfg,
-            "landing_cfg": landing_cfg,
-        },
-        "metrics": {
-            "length_total_m": est.length_total_m,
-            "length_transit_m": est.length_transit_m,
-            "length_spray_m": est.length_spray_m,
-            "time_total_min": est.time_total_min,
-            "time_transit_min": est.time_transit_min,
-            "time_spray_min": est.time_spray_min,
-            "fuel_l": est.fuel_l,
-            "fert_l": est.fert_l,
-            "field_area_ha": est.field_area_ha,
-            "sprayed_area_ha": est.sprayed_area_ha,
-        }
-    }
-    log("💾 Результат сохранён в session_state['route']")
-
 if clear_btn:
     st.session_state["route"] = None
     clear_log()
@@ -530,7 +387,8 @@ if clear_btn:
 
 if build_btn:
     try:
-        build_route_from_file(project_file)
+        clear_log()
+        st.session_state["route"] = build_route_from_file(project_file, log_fn=log)
         st.success("Маршрут построен. См. карту и логи ниже.")
     except Exception as e:
         tb = traceback.format_exc()
@@ -569,10 +427,20 @@ if route:
     # маршруты
     folium.GeoJson(route["geo"]["cover_path"], name="Покрытие по полю",
                    style_function=lambda x: {"color":"#00aa00","weight":4}).add_to(m2)
-    folium.GeoJson(route["geo"]["to_field"],  name="Долёт",
-                   style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
-    folium.GeoJson(route["geo"]["back_home"], name="Возврат",
-                   style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+    trips = route["geo"].get("trips") or []
+    if trips:
+        for idx, t in enumerate(trips):
+            folium.GeoJson(t["to_field"],  name=f"Долёт #{idx+1}",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+            folium.GeoJson(t["back_home"], name=f"Возврат #{idx+1}",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+    else:
+        if route["geo"].get("to_field"):
+            folium.GeoJson(route["geo"]["to_field"],  name="Долёт",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
+        if route["geo"].get("back_home"):
+            folium.GeoJson(route["geo"]["back_home"], name="Возврат",
+                           style_function=lambda x: {"color":"#1f77b4","weight":4,"dashArray":"5,5"}).add_to(m2)
 
     folium.LayerControl(position="topleft", collapsed=False).add_to(m2)
     st_folium(m2, width="100%", height=560)
@@ -590,99 +458,92 @@ if route:
     c6.metric("Обработка, км",    f"{mtr['length_spray_m']/1000:.2f}")
     c7.metric("Площадь поля, га", f"{mtr['field_area_ha']:.3f}")
     c8.metric("Покрыто, га",      f"{mtr['sprayed_area_ha']:.3f}")
+    c9, c10 = st.columns(2)
+    c9.metric("Площадь поля, м²", f"{mtr['field_area_m2']:.1f}")
+    c10.metric("Покрыто, м²",     f"{mtr['sprayed_area_m2']:.1f}")
+
+    # ======= Статистика по рейсам =======
+    trips = route["geo"].get("trips") or []
+    if trips:
+        st.subheader("Рейсы: загрузка и остатки")
+        ac = route.get("config", {}).get("aircraft", {})
+        total_capacity = float(ac.get("total_capacity_l", 0.0))
+        fuel_reserve = float(ac.get("fuel_reserve_l", 0.0))
+
+        rows = []
+        total_fuel_loaded = 0.0
+        total_mix_loaded = 0.0
+        total_fuel_used = 0.0
+        total_mix_used = 0.0
+
+        for idx, t in enumerate(trips, start=1):
+            fuel_used = float(t.get("fuel_used_l", 0.0))
+            mix_used = float(t.get("mix_used_l", 0.0))
+            fuel_loaded = max(0.0, fuel_used + fuel_reserve)
+            mix_loaded = max(0.0, total_capacity - fuel_loaded)
+            fuel_left = max(0.0, fuel_loaded - fuel_used)
+            mix_left = max(0.0, mix_loaded - mix_used)
+
+            total_fuel_loaded += fuel_loaded
+            total_mix_loaded += mix_loaded
+            total_fuel_used += fuel_used
+            total_mix_used += mix_used
+
+            rows.append(
+                {
+                    "Рейс": idx,
+                    "Сват (с)": t.get("start_idx", 0),
+                    "Сват (по)": t.get("end_idx", 0),
+                    "Загр. топливо, л": round(fuel_loaded, 2),
+                    "Загр. смесь, л": round(mix_loaded, 2),
+                    "Израсх. топливо, л": round(fuel_used, 2),
+                    "Израсх. смесь, л": round(mix_used, 2),
+                    "Остаток топлива, л": round(fuel_left, 2),
+                    "Остаток смеси, л": round(mix_left, 2),
+                }
+            )
+
+        st.dataframe(rows, use_container_width=True)
+
+        c11, c12, c13, c14 = st.columns(4)
+        c11.metric("Загружено топлива, л", f"{total_fuel_loaded:.1f}")
+        c12.metric("Загружено смеси, л", f"{total_mix_loaded:.1f}")
+        c13.metric("Израсх. топлива, л", f"{total_fuel_used:.1f}")
+        c14.metric("Израсх. смеси, л", f"{total_mix_used:.1f}")
 
 
 # ======= ЭКСПОРТ МАРШРУТА (WGS84, с дискретизацией по шагу в метрах) =======
 if route and export_btn:
     try:
-        # 1) Подгружаем проект, чтобы восстановить контекст CRS (для метра)
-        if not os.path.exists(project_file):
-            st.error("Файл проекта не найден для экспорта.")
-        else:
-            with open(project_file, "r", encoding="utf-8") as f:
-                data_for_ctx = json.load(f)
-            ge = data_for_ctx.get("geoms", {})
-            field_for_ctx = ge.get("field")
-            runway_for_ctx = ge.get("runway_centerline")
-            nfz_for_ctx = ge.get("nfz", []) or []
-            if not field_for_ctx or not runway_for_ctx:
-                st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
-            else:
-                # 2) Собираем CRS и переводим маршрутные линии в метры
-                ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+        result = export_route_geojson_csv(
+            route=route,
+            project_file=project_file,
+            export_name=export_name,
+            export_step_m=export_step_m,
+        )
 
-                def _wgs_ls_to_m(ls_gj):
-                    return to_utm_geom(shape(ls_gj), ctx)
+        geojson_path = result["geojson_path"]
+        csv_path = result["csv_path"]
 
-                to_field_wgs_gj  = route["geo"]["to_field"]
-                back_home_wgs_gj = route["geo"]["back_home"]
-                cover_wgs_gj     = route["geo"]["cover_path"]
+        colg, colc = st.columns(2)
+        with open(geojson_path, "rb") as fh:
+            colg.download_button(
+                "⬇️ GeoJSON (WGS84)",
+                fh,
+                file_name=os.path.basename(geojson_path),
+                mime="application/geo+json",
+                use_container_width=True,
+            )
+        with open(csv_path, "rb") as fh:
+            colc.download_button(
+                "⬇️ CSV (точки по шагу)",
+                fh,
+                file_name=os.path.basename(csv_path),
+                mime="text/csv",
+                use_container_width=True,
+            )
 
-                to_field_m  = _wgs_ls_to_m(to_field_wgs_gj)
-                back_home_m = _wgs_ls_to_m(back_home_wgs_gj)
-                cover_m     = _wgs_ls_to_m(cover_wgs_gj)
-
-                # 3) Дискретизация (в метрах), затем обратно в WGS
-                step = float(export_step_m)
-                samples = {
-                    "to_field":  sample_linestring_m(to_field_m,  step),
-                    "cover":     sample_linestring_m(cover_m,     step),
-                    "back_home": sample_linestring_m(back_home_m, step),
-                }
-
-                samples_wgs = {
-                    seg: [to_wgs_geom(p, ctx) for p in pts] for seg, pts in samples.items()
-                }
-
-                # 4) Пишем GeoJSON (FeatureCollection с LineString’ами) и CSV с точками
-                export_dir = "data/exports"
-                os.makedirs(export_dir, exist_ok=True)
-                base = os.path.join(export_dir, f"{export_name.strip() or 'route'}_{int(step)}m")
-
-                # 4.1 GeoJSON: исходные «неразреженные» LineString в WGS + свойства
-                export_fc = {
-                    "type": "FeatureCollection",
-                    "features": [
-                        {
-                            "type": "Feature",
-                            "properties": {"segment": "to_field"},
-                            "geometry": route["geo"]["to_field"],
-                        },
-                        {
-                            "type": "Feature",
-                            "properties": {"segment": "cover"},
-                            "geometry": route["geo"]["cover_path"],
-                        },
-                        {
-                            "type": "Feature",
-                            "properties": {"segment": "back_home"},
-                            "geometry": route["geo"]["back_home"],
-                        },
-                    ],
-                }
-                geojson_path = f"{base}.geojson"
-                with open(geojson_path, "w", encoding="utf-8") as f:
-                    json.dump(export_fc, f, ensure_ascii=False, indent=2)
-
-                # 4.2 CSV точек (дискретизированные точки)
-                import csv
-                csv_path = f"{base}.csv"
-                with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                    w = csv.writer(f)
-                    w.writerow(["segment", "idx", "lat", "lon"])
-                    for seg, pts in samples_wgs.items():
-                        for i, p in enumerate(pts):
-                            lon, lat = p.x, p.y
-                            w.writerow([seg, i, f"{lat:.8f}", f"{lon:.8f}"])
-
-                # 5) Кнопки скачивания
-                colg, colc = st.columns(2)
-                with open(geojson_path, "rb") as fh:
-                    colg.download_button("⬇️ GeoJSON (WGS84)", fh, file_name=os.path.basename(geojson_path), mime="application/geo+json", use_container_width=True)
-                with open(csv_path, "rb") as fh:
-                    colc.download_button("⬇️ CSV (точки по шагу)", fh, file_name=os.path.basename(csv_path), mime="text/csv", use_container_width=True)
-
-                st.success(f"Экспорт готов: {geojson_path} и {csv_path}")
+        st.success(f"Экспорт готов: {geojson_path} и {csv_path}")
 
     except Exception as e:
         st.error(f"Ошибка экспорта: {e}")
@@ -690,84 +551,28 @@ if route and export_btn:
 
 # ======= ЭКСПОРТ В MISSION PLANNER (.waypoints) =======
 if route and mp_export_btn:
-    # Нам нужен контекст CRS для метрической дискретизации
-    if not os.path.exists(project_file):
-        st.error("Файл проекта не найден — не могу определить проекцию.")
-    else:
-        with open(project_file, "r", encoding="utf-8") as f:
-            data_for_ctx = json.load(f)
-        ge = data_for_ctx.get("geoms", {})
-        field_for_ctx = ge.get("field")
-        runway_for_ctx = ge.get("runway_centerline")
-        nfz_for_ctx = ge.get("nfz", []) or []
-        if not field_for_ctx or not runway_for_ctx:
-            st.error("В файле проекта нет поля или ВПП — не могу определить проекцию.")
-        else:
-            # CRS
-            ctx = context_from_many_geojson([field_for_ctx, runway_for_ctx, *nfz_for_ctx])
+    try:
+        result = export_mission_planner(
+            route=route,
+            project_file=project_file,
+            project_name=project_name,
+            mp_filename=mp_filename,
+            mp_step_m=mp_step_m,
+            mp_alt_agl=mp_alt_agl,
+        )
+        wpl_path = result["wpl_path"]
 
-            # Берём линии маршрута из session_state (в WGS), переводим в метры
-            def _wgs_ls_to_m(ls_gj):
-                return to_utm_geom(shape(ls_gj), ctx)
-
-            to_field_m  = _wgs_ls_to_m(route["geo"]["to_field"])
-            cover_m     = _wgs_ls_to_m(route["geo"]["cover_path"])
-            back_home_m = _wgs_ls_to_m(route["geo"]["back_home"])
-
-            # Дискретизация
-            step = float(mp_step_m)
-            pts_to   = sample_linestring_m(to_field_m,  step)
-            pts_cov  = sample_linestring_m(cover_m,     step)
-            pts_back = sample_linestring_m(back_home_m, step)
-
-            # nfz по полю
-            nfz_m = [to_utm_geom(shape(g), ctx) for g in nfz_for_ctx]
-            pts_cov = apply_overfly_alt_profile(path_pts=pts_cov, nfz_polys_m=nfz_m)
-
-            # Склейка точек: to_field -> cover -> back_home
-            pts_all_m = pts_to + pts_cov + pts_back
-            if not pts_all_m:
-                st.error("Нет точек для экспорта.")
-            else:
-                # Переводим в WGS84
-                # pts_all_wgs = [to_wgs_geom(p, ctx) for p in pts_all_m]
-
-                # Строим .waypoints
-                # wpl_text = build_qgc_wpl(
-                #     pts_all_wgs,
-                #     alt_agl=float(mp_alt_agl),
-                #     speed_ms=float(mp_speed_ms),
-                #     include_takeoff=True,
-                #     include_rtl=True
-                # )
-                runway_m = to_utm_geom(shape(runway_for_ctx), ctx)
-
-                wpl_text = build_wpl_from_local_route(
-                    runway_m=runway_m,
-                    route_points_m=pts_all_m,  # точки маршрута от CCA до FAF (включая поле)
-                    ctx=ctx,
-                    takeoff_cfg=route["config"]["takeoff_cfg"],
-                    landing_cfg=route["config"]["landing_cfg"],
-                    cruise_alt_agl=float(mp_alt_agl)
-                )
-
-                # Сохраняем и отдаём
-                export_dir = "data/exports"
-                os.makedirs(export_dir, exist_ok=True)
-                base = (mp_filename.strip() or f"{project_name}_mission").replace(" ", "_")
-                wpl_path = os.path.join(export_dir, f"{base}.waypoints")
-                with open(wpl_path, "w", encoding="utf-8") as f:
-                    f.write(wpl_text)
-
-                with open(wpl_path, "rb") as fh:
-                    st.download_button(
-                        "⬇️ Mission Planner (.waypoints)",
-                        fh,
-                        file_name=os.path.basename(wpl_path),
-                        mime="text/plain",
-                        use_container_width=True
-                    )
-                st.success(f"Готово: {wpl_path}")
+        with open(wpl_path, "rb") as fh:
+            st.download_button(
+                "⬇️ Mission Planner (.waypoints)",
+                fh,
+                file_name=os.path.basename(wpl_path),
+                mime="text/plain",
+                use_container_width=True,
+            )
+        st.success(f"Готово: {wpl_path}")
+    except Exception as e:
+        st.error(f"Ошибка экспорта: {e}")
 
 
 # =============== ЛОГИ ===============

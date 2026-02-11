@@ -1,4 +1,5 @@
-# route/fillet.py
+"""Fillet helpers for smoothing polylines."""
+
 from __future__ import annotations
 from typing import List, Iterable, Optional, Tuple
 import math
@@ -6,15 +7,21 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union, substring
 
 def _unit(vx: float, vy: float) -> Tuple[float, float]:
+    """Normalize a vector."""
     n = math.hypot(vx, vy)
     if n == 0.0: return (0.0, 0.0)
     return (vx / n, vy / n)
 
-def _dot(ax, ay, bx, by): return ax*bx + ay*by
-def _cross(ax, ay, bx, by): return ax*by - ay*bx
+def _dot(ax, ay, bx, by):
+    """Dot product of two vectors."""
+    return ax*bx + ay*by
+
+def _cross(ax, ay, bx, by):
+    """2D cross product (scalar)."""
+    return ax*by - ay*bx
 
 def _arc_points_dir(cx: float, cy: float, r: float, ang0: float, ang1: float, direction: int, step: float) -> List[Tuple[float,float]]:
-    """direction: +1 = CCW (влево), -1 = CW (вправо)"""
+    """Generate arc points between angles with direction (+1 CCW, -1 CW)."""
     def mod2pi(a):
         tw = 2.0*math.pi
         a = a % tw
@@ -44,7 +51,7 @@ def fillet_polyline(
     nfz: Optional[Iterable[Polygon]] = None,
     nfz_buffer_m: float = 0.0,
 ) -> LineString:
-    """Сглаживает внутренние углы полилинии дугами радиуса R (без концов)."""
+    """Fillet internal polyline corners with circular arcs."""
     if line.is_empty or radius_m <= 0.0:
         return line
     coords = list(line.coords)
@@ -125,10 +132,10 @@ def fillet_with_end_headings(
     nfz: Optional[Iterable[Polygon]] = None,
     nfz_buffer_m: float = 0.0,
 ) -> LineString:
-    """
-    Сглаживает углы + скругляет концы по заданным курсам.
-    Реализация: добавляем виртуальные точки за концами по указанным heading,
-    делаем обычный fillet, затем вырезаем участок между исходными концами.
+    """Fillet polyline with optional end headings.
+
+    Adds virtual points along the given headings, fillets the augmented line,
+    then trims back to original endpoints.
     """
     if line.is_empty or radius_m <= 0.0:
         return line

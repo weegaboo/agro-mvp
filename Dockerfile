@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends swig python3-py
 
 # 3) Твоё приложение
 WORKDIR /app
+ENV PYTHONPATH=/app/src
 COPY requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 COPY . /app

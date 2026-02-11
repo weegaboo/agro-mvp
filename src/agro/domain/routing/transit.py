@@ -1,18 +1,6 @@
-"""
-route/transit.py — построение транзита: ВПП -> entry, exit -> ВПП
+"""Transit routing between runway and field swaths.
 
-Ожидаемые входы (в UTM, МЕТРЫ!):
-- runway_centerline_m : shapely.geometry.LineString      # ось ВПП
-- entry_pt_m          : shapely.geometry.Point           # точка входа в покрытие поля
-- exit_pt_m           : shapely.geometry.Point           # точка выхода из покрытия
-- nfz_polys_m         : list[shapely.geometry.Polygon]   # запретные зоны (возможно пустой список)
-
-Что делает:
-- Строит "долёт" (runway_start -> entry) и "возврат" (exit -> runway_return_end)
-- Обходит NFZ простой эвристикой: прямая, иначе ломаная через 1–2 ближайшие вершины мешающего полигона
-- (опционально) расширяет NFZ safety-буфером
-
-Важно: сглаживания по радиусу разворота здесь НЕТ — добавим на Неделе 3.
+All geometry inputs are in meters (UTM).
 """
 
 from __future__ import annotations
@@ -23,14 +11,14 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 # локальные утилиты
-from geo.utils import (
+from agro.domain.geo.utils import (
     straight_or_vertex_avoid,
     buffer_many,
     line_endpoints,
 )
-from route.ompl_simple_transit import ompl_start_end_points_swath
-from route.ompl_nfz_transit import ompl_start_end_points_swath_nfz
-from route.landing_and_takeoff import build_takeoff_anchor, build_landing_anchor, TakeoffConfig, LandingConfig
+from agro.infra.ompl.simple_transit import ompl_start_end_points_swath
+from agro.infra.ompl.nfz_transit import ompl_start_end_points_swath_nfz
+from agro.domain.routing.landing_and_takeoff import build_takeoff_anchor, build_landing_anchor, TakeoffConfig, LandingConfig
 
 
 ReturnEnd = Literal["start", "end"]
@@ -38,23 +26,19 @@ ReturnEnd = Literal["start", "end"]
 
 @dataclass
 class TransitOptions:
-    """
-    Настройки построения транзита.
-    - return_to: к какому концу ВПП возвращаться: 'start' или 'end'
-    - nfz_safety_buffer_m: сколько "утолщать" NFZ для безопасного обхода
-    """
+    """Options for transit routing."""
     return_to: ReturnEnd = "start"
     nfz_safety_buffer_m: float = 0.0
 
 
 def _pick_runway_point(centerline: LineString, where: ReturnEnd) -> Tuple[float, float]:
-    """Возвращает координату (x, y) начала или конца оси ВПП (в UTM)."""
+    """Return start/end coordinate of the runway centerline."""
     p0, p1 = line_endpoints(centerline)
     return p0 if where == "start" else p1
 
 
 def _prepare_nfz(nfz_polys_m: Sequence[Polygon], safety_buffer_m: float) -> list[Polygon]:
-    """Применяет safety-буфер (если >0) и возвращает список полигонов."""
+    """Apply safety buffer and return filtered NFZ polygons."""
     nfz_polys_m = [p for p in nfz_polys_m if p and not p.is_empty]
     if not nfz_polys_m:
         return []
@@ -72,6 +56,7 @@ def _prepare_nfz(nfz_polys_m: Sequence[Polygon], safety_buffer_m: float) -> list
 
 
 def heading(a: Tuple[float,float], b: Tuple[float,float]) -> float:
+    """Return heading angle (radians) from a to b."""
     return math.atan2(b[1]-a[1], b[0]-a[0])
 
 
@@ -85,13 +70,20 @@ def build_transit(
     nfz_polys_m: Sequence[Polygon],
     options: TransitOptions = TransitOptions(),
 ) -> tuple[LineString, LineString]:
-    """
-    Основная функция: строит (to_field, back_home) как LineString в UTM.
+    """Build transit using simple OMPL (no NFZ) utilities.
 
-    - to_field:   от начала ВПП (или по желанию — можно сделать параметром) до entry_pt_m
-    - back_home:  от exit_pt_m до выбранного конца ВПП (options.return_to)
+    Args:
+        runway_m: Runway centerline in meters (UTM).
+        begin_at_runway_end: Takeoff anchor (x, y).
+        back_to_runway_end: Landing anchor (x, y).
+        first_swath: First swath LineString (UTM).
+        last_swath: Last swath LineString (UTM).
+        turn_r: Minimum turning radius in meters.
+        nfz_polys_m: NFZ polygons (UTM).
+        options: Transit options.
 
-    Эвристика обхода NFZ: straight_or_vertex_avoid(...)
+    Returns:
+        Tuple of (to_field, back_home) LineStrings in meters.
     """
     if runway_m is None or runway_m.is_empty:
         raise ValueError("runway_centerline_m is required and must be non-empty")
@@ -121,14 +113,7 @@ def build_transit_with_nfz(
     turn_r: float,
     nfz_polys_m: Sequence[Polygon],
 ) -> tuple[LineString, LineString]:
-    """
-    Основная функция: строит (to_field, back_home) как LineString в UTM.
-
-    - to_field:   от конца ВПП (begin_at_runway_end) до first_swath
-    - back_home:  от last_swath до конца ВПП (back_to_runway_end)
-
-    Теперь транзит строится через OMPL (Dubins + RRT* + NFZ).
-    """
+    """Build transit using OMPL with NFZ constraints."""
 
     if runway_m is None or runway_m.is_empty:
         raise ValueError("runway_m (runway_centerline) is required and must be non-empty")
@@ -174,7 +159,7 @@ def build_transit_with_nfz(
 
 @dataclass
 class TransitResult:
-    """Результат транзита в метрах (UTM)."""
+    """Transit result in meters (UTM)."""
     to_field: LineString
     back_home: LineString
     nfz_used: list[Polygon]
@@ -189,9 +174,7 @@ def build_transit_full(
     turn_r: float,
     nfz_polys_m: Sequence[Polygon],
 ) -> TransitResult:
-    """
-    Удобный вызов: вернёт и линии транзита, и список NFZ, который реально использовался (с буфером).
-    """
+    """Build transit and return full result with configs."""
     begin_at_runway_end, takeoff_cfg = build_takeoff_anchor(runway_m)
     back_to_runway_end, landing_cfg = build_landing_anchor(runway_m)
     to_field, back_home = build_transit_with_nfz(
