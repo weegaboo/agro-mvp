@@ -1,1 +1,1 @@
-# geo package
+"""Geo domain utilities."""

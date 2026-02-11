@@ -1,1 +1,1 @@
-# routing package
+"""Routing domain utilities."""

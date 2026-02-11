@@ -1,1 +1,1 @@
-# agro package
+"""Top-level agro package."""

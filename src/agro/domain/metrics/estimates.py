@@ -1,15 +1,9 @@
-# metrics/estimates.py
-"""
-Оценки по маршруту: длина, время, топливо, удобрения.
+"""Mission metrics: lengths, time, fuel, and mixture usage.
 
-Как считается:
-- Длины: из LineString'ов (в UTM, м).
-- Время: разная скорость для транзита и обработки.
-- Топливо: расход (л/км) * длина (км).
-- Удобрение: norm (л/га) * sprayed_area_ha, где sprayed_area_ha — площадь union
-  буферов проходов (spray_width/2) обрезанных полем.
-
-Входные геометрии должны быть в МЕТРАХ (UTM).
+Assumptions:
+    - Geometry is in meters (UTM).
+    - Fuel burn is per kilometer.
+    - Mixture use is per hectare of sprayed area.
 """
 
 from __future__ import annotations
@@ -24,6 +18,7 @@ from shapely.ops import unary_union
 
 @dataclass
 class EstimateOptions:
+    """Options for mission estimation."""
     # скорости
     transit_speed_ms: float = 20.0   # м/с на долёте/возврате (≈72 км/ч)
     spray_speed_ms: float = 15.0     # м/с на покрытии (≈54 км/ч)
@@ -44,6 +39,7 @@ class EstimateOptions:
 
 @dataclass
 class EstimateResult:
+    """Calculated mission metrics."""
     # длины
     length_total_m: float
     length_transit_m: float
@@ -71,21 +67,33 @@ class EstimateResult:
 # ------------------------------ утилиты ------------------------------ #
 
 def _len_m(ls: Optional[LineString]) -> float:
+    """Return LineString length in meters (0 if empty)."""
     return 0.0 if ls is None or ls.is_empty else float(ls.length)
 
 
 def _area_ha(pg: Optional[Polygon]) -> float:
+    """Return polygon area in hectares (0 if empty)."""
     return 0.0 if pg is None or pg.is_empty else float(pg.area) / 10_000.0
 
 
 def _area_m2(pg: Optional[Polygon]) -> float:
+    """Return polygon area in square meters (0 if empty)."""
     return 0.0 if pg is None or pg.is_empty else float(pg.area)
 
 
 # ------------------------------ площадь покрытия ------------------------------ #
 
 def compute_sprayed_area_m2(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> float:
-    """Площадь фактического покрытия (м2): union буферов линий (spray_width/2), обрезанный полем."""
+    """Compute sprayed area in square meters.
+
+    Args:
+        field_poly_m: Field polygon in meters (UTM).
+        swaths: Swath lines in meters (UTM).
+        spray_width_m: Spray width in meters.
+
+    Returns:
+        Sprayed area in square meters.
+    """
     if not field_poly_m or field_poly_m.is_empty or not swaths:
         return 0.0
     half = max(spray_width_m, 0.0) / 2.0
@@ -110,21 +118,18 @@ def estimate_mission(
     back_home_m: LineString,
     opts: EstimateOptions = EstimateOptions(),
 ) -> EstimateResult:
-    """
-    Считает метрики миссии по сегментам маршрута.
+    """Estimate mission metrics from explicit transit paths.
 
-    Параметры
-    ---------
-    field_poly_m : Polygon (UTM) — поле
-    swaths       : List[LineString] (UTM) — отдельные проходы
-    cover_path_m : LineString (UTM) — сводная "змейка" внутри поля
-    to_field_m   : LineString (UTM) — долёт
-    back_home_m  : LineString (UTM) — возврат
-    opts         : EstimateOptions — скорости, нормы, ширина захвата
+    Args:
+        field_poly_m: Field polygon in meters (UTM).
+        swaths: Swath lines in meters (UTM).
+        cover_path_m: Full coverage path in meters (UTM).
+        to_field_m: Transit to field in meters (UTM).
+        back_home_m: Transit back to runway in meters (UTM).
+        opts: Estimation options.
 
-    Возвращает
-    ----------
-    EstimateResult
+    Returns:
+        EstimateResult with lengths, time, fuel, mixture, and areas.
     """
     # длины
     L_transit = _len_m(to_field_m) + _len_m(back_home_m)
@@ -192,6 +197,18 @@ def estimate_mission_from_lengths(
     transit_length_m: float,
     opts: EstimateOptions = EstimateOptions(),
 ) -> EstimateResult:
+    """Estimate mission metrics using total transit length.
+
+    Args:
+        field_poly_m: Field polygon in meters (UTM).
+        swaths: Swath lines in meters (UTM).
+        cover_path_m: Full coverage path in meters (UTM).
+        transit_length_m: Total transit length in meters (UTM).
+        opts: Estimation options.
+
+    Returns:
+        EstimateResult with lengths, time, fuel, mixture, and areas.
+    """
     L_transit = float(max(0.0, transit_length_m))
     L_spray = _len_m(cover_path_m)
     L_total = L_transit + L_spray

@@ -1,3 +1,5 @@
+"""Takeoff/landing helpers and Mission Planner WPL export."""
+
 from typing import List, Tuple, Callable, Dict, Optional, Union
 from dataclasses import dataclass
 import math
@@ -7,12 +9,14 @@ from agro.domain.geo.crs import CRSContext, to_wgs_geom
 
 # ---------- утилиты (метры, локальная плоскость) ----------
 def _uv_len(a: Tuple[float,float], b: Tuple[float,float]):
+    """Return unit direction and length between two points."""
     vx, vy = b[0]-a[0], b[1]-a[1]
     L = math.hypot(vx, vy)
     if L == 0: raise ValueError("Runway endpoints coincide")
     return (vx/L, vy/L, L)
 
 def _offset_along(p: Tuple[float,float], u: Tuple[float,float], s: float) -> Point:
+    """Offset a point along a unit vector by distance s."""
     return Point(p[0] + u[0]*s, p[1] + u[1]*s)
 
 # ==========================================================
@@ -20,6 +24,7 @@ def _offset_along(p: Tuple[float,float], u: Tuple[float,float], s: float) -> Poi
 # ==========================================================
 @dataclass
 class TakeoffConfig:
+    """Parameters for takeoff segment generation."""
     takeoff_alt_agl: float = 10.0       # высота завершения NAV_TAKEOFF (м)
     roll_distance_m: float = 150.0      # отступ до первой WP (разбег) (м)
     climb_angle_deg: float = 12.0       # угол набора до крейсерской (°)
@@ -30,11 +35,15 @@ def build_takeoff_anchor(
     cruise_alt_agl: float = 30.0,
     cfg: TakeoffConfig = TakeoffConfig()
 ) -> Tuple[Point, Dict]:
-    """
-    Возвращает:
-      - cca_point_m: Point (метры) — точка, где самолёт гарантированно вышел на cruise_alt_agl
-      - takeoff_cfg: dict — компактный конфиг для .waypoints
-    Логика: порог -> roll_distance (разбег) -> далее по оси добор (cruise - takeoff_alt)/tan(gamma).
+    """Compute takeoff anchor point and config.
+
+    Args:
+        runway_m: Runway centerline in meters (UTM).
+        cruise_alt_agl: Target cruise altitude (m AGL).
+        cfg: Takeoff config.
+
+    Returns:
+        Tuple of (cca_point_m, takeoff_cfg).
     """
     (x0,y0), (x1,y1) = map(tuple, runway_m.coords[:2])
     ux, uy, Lrw = _uv_len((x0,y0), (x1,y1))
@@ -58,6 +67,7 @@ def build_takeoff_anchor(
 # ==========================================================
 @dataclass
 class LandingConfig:
+    """Parameters for landing segment generation."""
     faf_alt_agl: float = 30.0         # высота FAF (м AGL)
     glide_angle_deg: float = 4.0      # угол глиссады (°)
     min_faf_distance_m: float = 400.0 # минимальная дальность FAF (м)
@@ -69,16 +79,7 @@ def build_landing_anchor(
     *,
     towards: str = "start",   # "start" -> посадка в начало ВПП; "end" -> посадка в конец ВПП
 ) -> Tuple[Point, Dict]:
-    """
-    Возвращает:
-      - faf_point_m: Point — точка FAF на одной оси с ВПП, откуда начинается прямая к LAND
-      - landing_cfg: dict — конфиг для сборки .waypoints
-
-    Логика:
-      u = единичный вектор от runway_start -> runway_end
-      Если towards=="start": LAND в runway_start, FAF = start + u * S_faf  (заход со стороны конца ВПП)
-      Если towards=="end":   LAND в runway_end,   FAF = end   - u * S_faf  (заход со стороны начала ВПП)
-    """
+    """Compute landing FAF point and config."""
     (x0,y0), (x1,y1) = map(tuple, runway_m.coords[:2])   # (x0,y0)=runway_start, (x1,y1)=runway_end
     ux, uy, _ = _uv_len((x0,y0), (x1,y1))
 
@@ -110,6 +111,7 @@ def build_landing_anchor(
 # ==========================================================
 
 def _uv_len(a: Tuple[float,float], b: Tuple[float,float]):
+    """Return unit direction and length between two points."""
     vx, vy = b[0]-a[0], b[1]-a[1]
     L = math.hypot(vx, vy)
     if L == 0:
@@ -133,6 +135,23 @@ def build_wpl_from_local_route(
     repeat_faf_waypoint: bool = False,
     dedupe_eps_m: float = 0.5
 ) -> str:
+    """Build QGC WPL 110 mission from local route points.
+
+    Args:
+        runway_m: Runway centerline in meters (UTM).
+        route_points_m: Route points (UTM), optionally with per-point altitude.
+        takeoff_cfg: Takeoff config dict.
+        landing_cfg: Landing config dict.
+        ctx: CRS context for conversion to WGS84.
+        cruise_alt_agl: Cruise altitude (m AGL).
+        include_midpoint_on_rw: Whether to add a midpoint waypoint on runway.
+        mid_fraction: Midpoint position fraction along runway.
+        repeat_faf_waypoint: Whether to duplicate FAF waypoint.
+        dedupe_eps_m: Dedupe distance in meters.
+
+    Returns:
+        WPL text string.
+    """
     (x0, y0), (x1, y1) = map(tuple, runway_m.coords[:2])
     vx, vy = x1 - x0, y1 - y0
     Lrw = math.hypot(vx, vy)

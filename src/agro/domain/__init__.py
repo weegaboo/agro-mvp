@@ -1,1 +1,1 @@
-# domain package
+"""Domain layer package."""

@@ -1,1 +1,1 @@
-# infra package
+"""Infrastructure adapters and integrations."""

@@ -1,1 +1,1 @@
-# metrics package
+"""Metrics domain utilities."""

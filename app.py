@@ -1,10 +1,4 @@
 import os, json, time, math, traceback
-import sys
-
-_ROOT = os.path.abspath(os.path.dirname(__file__))
-_SRC = os.path.join(_ROOT, "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 from typing import List, Dict, Any, Optional
 
 import streamlit as st

@@ -1,4 +1,5 @@
-# route/uturn.py
+"""Generate U-turn connectors between adjacent swaths."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -8,6 +9,7 @@ from shapely.geometry import LineString, Point, Polygon
 
 @dataclass
 class UTurnOptions:
+    """Parameters for U-turn generation."""
     R_min: float = 30.0
     step_m: float = 2.0
     # запасные параметры для fallback (teardrop)
@@ -18,15 +20,17 @@ class UTurnOptions:
 
 # ---------- утилиты ----------
 def _unit(vx, vy):
+    """Normalize a vector."""
     n = math.hypot(vx, vy)
     if n == 0: return (0.0, 0.0)
     return (vx/n, vy/n)
 
 def _rot90(vx, vy, left=True):
+    """Rotate a vector by 90 degrees."""
     return (-vy, vx) if left else (vy, -vx)
 
 def _arc_pts_signed(cx, cy, r, a0, sign, step, turns=0.5):
-    """Полуокружность/окружность: идём от угла a0 на угол sign * (π * 2 * turns) шагами ~step."""
+    """Generate arc points from angle a0 with a signed direction."""
     total = math.pi * 2.0 * turns
     L = abs(total) * r
     n = max(1, int(L / max(step, 0.1)))
@@ -38,6 +42,7 @@ def _arc_pts_signed(cx, cy, r, a0, sign, step, turns=0.5):
     return pts
 
 def _heading_of_segment(ls: LineString, at_start: bool) -> float:
+    """Return heading (radians) of a LineString segment at start or end."""
     cs = list(ls.coords)
     if len(cs) < 2: return 0.0
     if at_start: (x0,y0),(x1,y1) = cs[0], cs[1]
@@ -45,11 +50,11 @@ def _heading_of_segment(ls: LineString, at_start: bool) -> float:
     return math.atan2(y1-y0, x1-x0)
 
 def _spacing(sw1: LineString, sw2: LineString, ref_pt: Tuple[float,float]) -> float:
-    # перпендикулярное расстояние между параллельными swath'ами
+    """Approximate spacing between two parallel swaths."""
     return Point(ref_pt).distance(sw2)
 
 def _outward_normal(field_poly: Polygon, x: float, y: float, heading: float, eps: float = 1.0):
-    """Выбрать нормаль (влево/вправо) так, чтобы шаг от точки вышел СНАРУЖИ поля."""
+    """Pick outward normal so a step goes outside the field polygon."""
     nxL, nyL = _rot90(math.cos(heading), math.sin(heading), left=True)
     nxR, nyR = -nxL, -nyL
     pL = Point(x + nxL*eps, y + nyL*eps)
@@ -69,11 +74,7 @@ def _circular_semicircle_outside(
     spacing_m: float,
     opts: UTurnOptions
 ) -> Optional[LineString]:
-    """
-    Пытается построить чистый полуокружной поворот радиуса R = spacing/2,
-    касательный к концам swath_i (конец) и swath_i1 (начало), причём вся дуга вне поля.
-    Если удачно — возвращает LineString; иначе None.
-    """
+    """Try to build a circular half-turn outside the field polygon."""
     # конец текущей сваты и его курс
     cs_i = list(swath_i.coords)
     (sx, sy), (sx2, sy2) = cs_i[-2], cs_i[-1]
@@ -132,10 +133,7 @@ def _teardrop_fallback(
     spacing_m: float,
     opts: UTurnOptions
 ) -> LineString:
-    """
-    Запасной вариант: дуга(Rmin) – короткая прямая – дуга(Rmin), всё вне поля.
-    Почти как был раньше, но направление сватов НЕ меняем.
-    """
+    """Fallback U-turn using a teardrop-like path outside the field."""
     R = max(opts.R_min, spacing_m/2.0)
     step = max(opts.step_m, 0.5)
 
@@ -213,11 +211,7 @@ def build_cover_path_preserve_swaths_outside(
     spacing_m: float,
     opts: UTurnOptions
 ) -> LineString:
-    """
-    Идём по сватам в ТОЧНО ТОМ направлении, как выдал F2C.
-    Между ними пытаемся построить ЧИСТУЮ ПОЛУОКРУЖНОСТЬ (если R_min ≤ spacing/2).
-    Если не вышло — делаем teardrop вне поля.
-    """
+    """Build cover path preserving swath directions and U-turns outside field."""
     if not swaths:
         return LineString()
     coords: List[Tuple[float,float]] = []

@@ -1,1 +1,1 @@
-# ompl package
+"""OMPL integration package."""

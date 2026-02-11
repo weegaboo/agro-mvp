@@ -1,3 +1,9 @@
+"""Build a mission route from a saved project file.
+
+This service orchestrates projection, coverage planning, trip splitting,
+metrics calculation, and output assembly.
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,12 +21,22 @@ from agro.services.trip_splitter import split_into_trips, TripSplitError
 
 
 def _log(log_fn: Optional[Callable[[str], None]], msg: str) -> None:
+    """Emit a log message if logger is provided."""
     if log_fn:
         log_fn(msg)
 
 
 def _sprayed_polygon(field_poly_m: Polygon, swaths: List[LineString], spray_width_m: float) -> Optional[Polygon]:
-    """Зона удобрения как union буферов проходов (spray_width/2), обрезанный полем."""
+    """Compute sprayed polygon by buffering swaths and clipping by field.
+
+    Args:
+        field_poly_m: Field polygon in meters (UTM).
+        swaths: Swath lines in meters (UTM).
+        spray_width_m: Spray width in meters.
+
+    Returns:
+        Sprayed area polygon in meters, or None if empty.
+    """
     if not field_poly_m or field_poly_m.is_empty or not swaths:
         return None
     half = max(spray_width_m, 0.0) / 2.0
@@ -37,6 +53,20 @@ def _sprayed_polygon(field_poly_m: Polygon, swaths: List[LineString], spray_widt
 
 
 def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """Build full mission result from a project JSON file.
+
+    Args:
+        project_path: Path to project JSON.
+        log_fn: Optional logger callback.
+
+    Returns:
+        A dict with `geo`, `config`, and `metrics` sections.
+
+    Raises:
+        FileNotFoundError: If the project file does not exist.
+        ValueError: If required geometry is missing.
+        TripSplitError: If trips cannot be generated under constraints.
+    """
     _log(log_fn, f"🟦 Старт построения из файла: {project_path}")
 
     if not os.path.exists(project_path):

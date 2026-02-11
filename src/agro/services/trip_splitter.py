@@ -1,3 +1,10 @@
+"""Split a continuous coverage plan into multiple refuel/reload trips.
+
+This module implements a greedy splitter that allocates a shared tank between
+fuel and mixture, ensuring each trip can reach the field, perform work, and
+return to the runway with a fuel reserve.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +19,16 @@ from agro.domain.routing.landing_and_takeoff import build_takeoff_anchor, build_
 
 @dataclass
 class Trip:
+    """A single flight trip covering a contiguous swath range.
+
+    Attributes:
+        start_idx: Index of the first swath in this trip.
+        end_idx: Index of the last swath in this trip.
+        to_field: Transit path from runway to the start of the trip.
+        back_home: Transit path from the end of the trip back to runway.
+        fuel_used_l: Fuel consumed on this trip (liters).
+        mix_used_l: Mixture consumed on this trip (liters).
+    """
     start_idx: int
     end_idx: int
     to_field: LineString
@@ -21,16 +38,24 @@ class Trip:
 
     @property
     def transit_len_m(self) -> float:
+        """Return total transit length for the trip, in meters."""
         return float(self.to_field.length + self.back_home.length)
 
 
 @dataclass
 class TripSplitResult:
+    """Result of splitting into multiple trips.
+
+    Attributes:
+        trips: List of generated trips.
+        transit_length_m: Sum of all transit lengths (meters).
+    """
     trips: List[Trip]
     transit_length_m: float
 
 
 class TripSplitError(Exception):
+    """Raised when trips cannot be built under current constraints."""
     pass
 
 
@@ -47,6 +72,34 @@ def split_into_trips(
     mix_rate_l_per_ha: float,
     spray_width_m: float,
 ) -> TripSplitResult:
+    """Split swaths into trips using a shared tank and fuel reserve.
+
+    The algorithm greedily extends a trip while the combined requirement for:
+    - fuel to reach the field,
+    - fuel to perform work,
+    - fuel to return home,
+    - reserve fuel,
+    - mixture for work,
+    fits in the total tank capacity.
+
+    Args:
+        runway_m: Runway centerline in meters (UTM).
+        swaths: Ordered swath LineStrings in meters (UTM).
+        cover_path_m: Full coverage path in meters (UTM).
+        nfz_polys_m: No-fly zones in meters (UTM).
+        turn_r: Minimum turn radius (meters).
+        total_capacity_l: Shared tank capacity (liters).
+        fuel_reserve_l: Fuel reserve to keep at trip end (liters).
+        fuel_burn_l_per_km: Fuel burn rate (liters per km).
+        mix_rate_l_per_ha: Mixture rate (liters per hectare).
+        spray_width_m: Spray width (meters).
+
+    Returns:
+        TripSplitResult with trips and total transit length.
+
+    Raises:
+        TripSplitError: If a swath is unreachable with given constraints.
+    """
     if total_capacity_l <= 0:
         raise TripSplitError("total_capacity_l must be > 0")
     if fuel_reserve_l < 0:
@@ -68,6 +121,7 @@ def split_into_trips(
     transit_cache: Dict[int, Dict[str, LineString]] = {}
 
     def _transit_for_swath(idx: int) -> Dict[str, LineString]:
+        """Compute or fetch cached transit paths for a swath index."""
         if idx in transit_cache:
             return transit_cache[idx]
         s = swaths[idx]

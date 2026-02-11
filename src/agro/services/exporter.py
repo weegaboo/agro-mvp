@@ -1,3 +1,5 @@
+"""Export route geometry to GeoJSON and CSV."""
+
 from __future__ import annotations
 
 import json
@@ -11,7 +13,15 @@ from agro.domain.geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_g
 
 
 def _sample_linestring_m(ls_m: LineString, step_m: float) -> list[Point]:
-    """Точки через каждые step_m + финальная точка."""
+    """Sample a LineString by step size in meters.
+
+    Args:
+        ls_m: LineString in meters (UTM).
+        step_m: Sampling step in meters.
+
+    Returns:
+        List of sampled Points in meters.
+    """
     if ls_m.is_empty:
         return []
     L = float(ls_m.length)
@@ -30,6 +40,22 @@ def export_route_geojson_csv(
     export_step_m: float,
     export_dir: str = "data/exports",
 ) -> Dict[str, str]:
+    """Export route geometry to GeoJSON and CSV files.
+
+    Args:
+        route: Route dict with WGS84 geometry in `route["geo"]`.
+        project_file: Path to the project JSON (for CRS context).
+        export_name: Base file name (without extension).
+        export_step_m: Sampling step in meters.
+        export_dir: Output directory.
+
+    Returns:
+        Dict with `geojson_path` and `csv_path`.
+
+    Raises:
+        FileNotFoundError: If project file is missing.
+        ValueError: If required geometry is missing.
+    """
     if not os.path.exists(project_file):
         raise FileNotFoundError("Файл проекта не найден для экспорта.")
 

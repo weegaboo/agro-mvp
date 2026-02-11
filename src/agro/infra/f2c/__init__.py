@@ -1,1 +1,1 @@
-# f2c package
+"""Fields2Cover integration package."""

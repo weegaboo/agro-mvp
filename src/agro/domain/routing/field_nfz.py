@@ -1,3 +1,5 @@
+"""Altitude profile adjustments when overflying NFZ."""
+
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple, Optional
 
@@ -7,6 +9,7 @@ from shapely.ops import unary_union
 
 @dataclass(frozen=True)
 class OverflyAltParams:
+    """Parameters for overfly altitude profile."""
     base_alt_m: float = 30.0          # обычная высота (м)
     overfly_alt_m: float = 60.0       # высота "перелёта" NFZ (м) — можно задавать абсолютом
     safety_buffer_m: float = 0.0      # буфер вокруг NFZ (м)
@@ -21,18 +24,15 @@ def apply_overfly_alt_profile(
     nfz_polys_m: Sequence[Polygon],
     params: OverflyAltParams = OverflyAltParams(),
 ) -> List[Tuple[Point, float]]:
-    """
-    Пост-процессор "overfly_alt" для готового пути (в метрах, UTM):
+    """Apply altitude profile over NFZ along a path.
 
-    1) Проверяет пересечение каждого сегмента пути с NFZ (с safety_buffer).
-    2) Собирает непрерывные интервалы по длине пути.
-    3) Расширяет каждый интервал на d_before/d_after.
-    4) Строит профиль высоты: плавный подъём (ramp_len), полка, плавный спуск.
-    5) Возвращает новые точки (интерполяция по полилинии) + alt.
+    Args:
+        path_pts: Path points in meters (UTM).
+        nfz_polys_m: NFZ polygons in meters (UTM).
+        params: Overfly altitude parameters.
 
-    ВАЖНО:
-    - Это имеет смысл только если NFZ разрешено "перелетать" по высоте.
-    - Если NFZ — геозона запрета по XY, нужно делать обход по XY, а не менять altitude.
+    Returns:
+        List of (Point, altitude_m) tuples along the path.
     """
 
     if len(path_pts) < 2:

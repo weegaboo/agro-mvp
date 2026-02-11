@@ -1,3 +1,5 @@
+"""Mission Planner (QGC WPL) export service."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +14,15 @@ from agro.domain.routing.landing_and_takeoff import build_wpl_from_local_route
 
 
 def _sample_linestring_m(ls_m: LineString, step_m: float) -> list[Point]:
-    """Точки через каждые step_m + финальная точка."""
+    """Sample a LineString by step size in meters.
+
+    Args:
+        ls_m: LineString in meters (UTM).
+        step_m: Sampling step in meters.
+
+    Returns:
+        List of sampled Points in meters.
+    """
     if ls_m.is_empty:
         return []
     L = float(ls_m.length)
@@ -33,6 +43,24 @@ def export_mission_planner(
     mp_alt_agl: float,
     export_dir: str = "data/exports",
 ) -> Dict[str, str]:
+    """Export route to Mission Planner WPL file.
+
+    Args:
+        route: Route dict with WGS84 geometry and configs.
+        project_file: Path to project JSON for CRS context.
+        project_name: Project name (fallback for filename).
+        mp_filename: Output filename (without extension).
+        mp_step_m: Sampling step in meters.
+        mp_alt_agl: Cruise altitude above ground level (meters).
+        export_dir: Output directory.
+
+    Returns:
+        Dict with `wpl_path`.
+
+    Raises:
+        FileNotFoundError: If project file is missing.
+        ValueError: If required geometry is missing or no points to export.
+    """
     if not os.path.exists(project_file):
         raise FileNotFoundError("Файл проекта не найден — не могу определить проекцию.")
 

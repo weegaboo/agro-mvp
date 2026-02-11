@@ -1,3 +1,5 @@
+"""Swath ordering and routing helpers."""
+
 from __future__ import annotations
 
 import math
@@ -10,6 +12,7 @@ from shapely.geometry import LineString
 
 @dataclass(frozen=True)
 class OrientedSwath:
+    """A swath with a chosen direction and side metadata."""
     swath_id: int
     dir: int  # 0 = A->B, 1 = B->A
     start: Tuple[float, float]
@@ -23,6 +26,7 @@ class OrientedSwath:
 # -----------------------------
 
 def _endpoints_xy(ls: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Return start/end coordinates of a LineString."""
     coords = list(ls.coords)
     if len(coords) < 2:
         raise ValueError("Each swath LineString must have at least 2 points.")
@@ -30,22 +34,27 @@ def _endpoints_xy(ls: LineString) -> Tuple[Tuple[float, float], Tuple[float, flo
 
 
 def _dist(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Euclidean distance between two points."""
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 def _dot(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Dot product of two 2D vectors."""
     return a[0] * b[0] + a[1] * b[1]
 
 
 def _sub(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
+    """Vector subtraction a - b."""
     return (a[0] - b[0], a[1] - b[1])
 
 
 def _norm(v: Tuple[float, float]) -> float:
+    """Vector norm."""
     return math.hypot(v[0], v[1])
 
 
 def _unit(v: Tuple[float, float]) -> Tuple[float, float]:
+    """Return unit vector (or default if near zero)."""
     n = _norm(v)
     return (v[0] / n, v[1] / n) if n > 1e-9 else (1.0, 0.0)
 
@@ -55,6 +64,7 @@ def _unit(v: Tuple[float, float]) -> Tuple[float, float]:
 # -----------------------------
 
 def estimate_swath_direction(swaths: List[LineString]) -> Tuple[float, float]:
+    """Estimate dominant swath direction."""
     ref = None
     for ls in swaths:
         a, b = _endpoints_xy(ls)
@@ -80,11 +90,13 @@ def estimate_swath_direction(swaths: List[LineString]) -> Tuple[float, float]:
 
 
 def canonicalize_swath(ls: LineString, d_unit: Tuple[float, float]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Order swath endpoints by projection along a direction."""
     p1, p2 = _endpoints_xy(ls)
     return (p1, p2) if _dot(p1, d_unit) <= _dot(p2, d_unit) else (p2, p1)
 
 
 def build_oriented_swaths(swaths: List[LineString]) -> List[OrientedSwath]:
+    """Build oriented swaths for both directions of each swath."""
     d = estimate_swath_direction(swaths)
     oriented: List[OrientedSwath] = []
     for i, ls in enumerate(swaths):
@@ -104,6 +116,7 @@ def build_adjacency(
     dist_factor: float = 2.0,
     require_same_side_entry: bool = True,
 ) -> Dict[int, List[int]]:
+    """Build adjacency list of possible swath transitions."""
     thr = dist_factor * min_turn_radius_m
     adj: Dict[int, List[int]] = {i: [] for i in range(len(oriented))}
     for ui, u in enumerate(oriented):
@@ -130,10 +143,7 @@ def find_route_min_hops(
     backtrack_depth: int = 4,
     seed: int = 42,
 ) -> Optional[List[OrientedSwath]]:
-    """
-    Ищем маршрут, выбирая следующий сват так, чтобы перелёт end->start был минимальным,
-    но сохраняя эвристику "не загнать себя в тупик" через future_deg.
-    """
+    """Find a swath route using a greedy hop-minimization heuristic."""
     rnd = random.Random(seed)
     N = len(swaths)
     if N == 0:
@@ -152,12 +162,15 @@ def find_route_min_hops(
     starts.sort(key=lambda i: len(adj[i]))
 
     def future_deg(state_idx: int, used: Set[int]) -> int:
+        """Count future options from a state excluding used swaths."""
         return sum(1 for v in adj[state_idx] if oriented[v].swath_id not in used)
 
     def hop_cost(u_idx: int, v_idx: int) -> float:
+        """Compute hop cost between two oriented swaths."""
         return _dist(oriented[u_idx].end, oriented[v_idx].start)
 
     def try_from(start_idx: int) -> Optional[List[int]]:
+        """Try to build a full route starting from a given node."""
         path = [start_idx]
         used: Set[int] = {oriented[start_idx].swath_id}
         stack: List[Tuple[int, List[int]]] = []
@@ -223,6 +236,17 @@ def build_swath_route_min_hops(
     dist_factor: float = 2.0,
     require_same_side_entry: bool = True,
 ) -> List[Dict]:
+    """Build a swath route by minimizing hop distances.
+
+    Args:
+        min_turn_radius_m: Minimum turning radius.
+        swaths_linestring: Swath LineStrings in meters.
+        dist_factor: Distance factor for adjacency threshold.
+        require_same_side_entry: Whether entry side must match.
+
+    Returns:
+        List of route dictionaries with swath ordering and direction.
+    """
     route = find_route_min_hops(
         swaths=swaths_linestring,
         min_turn_radius_m=min_turn_radius_m,

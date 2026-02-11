@@ -1,12 +1,7 @@
-"""
-geo/crs.py — утилиты для преобразования координат WGS84 <-> UTM
+"""Coordinate reference system utilities for WGS84 <-> UTM.
 
-Зачем:
-- считать длины/буферы/площади в МЕТРАХ (UTM), хранить исходные данные в WGS84.
-- централизовать выбор UTM-зоны и трансформации.
-
-Зависимости:
-  pip install pyproj shapely>=2.0
+Use this module to convert geometries into a metric CRS (UTM) for accurate
+length/area computations and back to WGS84 for display/export.
 """
 
 from __future__ import annotations
@@ -23,9 +18,14 @@ from shapely.ops import unary_union
 # ----------------------------- базовые хелперы ----------------------------- #
 
 def pick_utm_epsg(lon: float, lat: float) -> Tuple[int, int, str]:
-    """
-    По долготе/широте подбирает EPSG кода UTM.
-    Возвращает: (epsg, zone, hemisphere), где hemisphere ∈ {"N", "S"}.
+    """Choose UTM EPSG code by longitude and latitude.
+
+    Args:
+        lon: Longitude in degrees.
+        lat: Latitude in degrees.
+
+    Returns:
+        Tuple of (epsg, zone, hemisphere), where hemisphere is "N" or "S".
     """
     if not (-180.0 <= lon <= 180.0) or not (-90.0 <= lat <= 90.0):
         raise ValueError("Longitude must be in [-180,180], latitude in [-90,90]")
@@ -38,7 +38,7 @@ def pick_utm_epsg(lon: float, lat: float) -> Tuple[int, int, str]:
 
 @dataclass(frozen=True)
 class CRSContext:
-    """Контекст проекции WGS84 <-> UTM для одной UTM-зоны."""
+    """Projection context for a single UTM zone."""
     epsg: int
     zone: int
     hemisphere: str  # "N" / "S"
@@ -47,6 +47,7 @@ class CRSContext:
 
     @classmethod
     def from_lonlat(cls, lon: float, lat: float) -> "CRSContext":
+        """Create a CRSContext from longitude and latitude."""
         epsg, zone, hemi = pick_utm_epsg(lon, lat)
         to_utm = Transformer.from_crs(
             "EPSG:4326", f"EPSG:{epsg}", always_xy=True
@@ -60,17 +61,14 @@ class CRSContext:
 # ------------------------- выбор контекста по геометрии ------------------------- #
 
 def centroid_lonlat_of_geojson(geom_gj: Dict[str, Any]) -> Tuple[float, float]:
-    """
-    Берёт GeoJSON-геометрию в WGS84, возвращает (lon, lat) её центроида.
-    Поддерживает Point / LineString / Polygon / MultiPolygon.
-    """
+    """Compute centroid lon/lat for a GeoJSON geometry in WGS84."""
     g = shape(geom_gj)
     c = g.centroid
     return float(c.x), float(c.y)
 
 
 def context_from_geojson(geom_gj: Dict[str, Any]) -> CRSContext:
-    """Создаёт CRSContext, подбирая UTM-зону по центроиду GeoJSON-геометрии."""
+    """Create CRSContext by centroid of a GeoJSON geometry."""
     lon, lat = centroid_lonlat_of_geojson(geom_gj)
     return CRSContext.from_lonlat(lon, lat)
 
@@ -78,7 +76,7 @@ def context_from_geojson(geom_gj: Dict[str, Any]) -> CRSContext:
 # -------------------------- репроекция SHAPELY-геометрий -------------------------- #
 
 def to_utm_geom(g: base.BaseGeometry, ctx: CRSContext) -> base.BaseGeometry:
-    """Репроецирует Shapely-геометрию из WGS84 в UTM (метры) по контексту."""
+    """Reproject Shapely geometry from WGS84 to UTM (meters)."""
     if isinstance(g, Point):
         x, y = ctx.to_utm.transform(g.x, g.y)
         return Point(x, y)
@@ -100,7 +98,7 @@ def to_utm_geom(g: base.BaseGeometry, ctx: CRSContext) -> base.BaseGeometry:
 
 
 def to_wgs_geom(g: base.BaseGeometry, ctx: CRSContext) -> base.BaseGeometry:
-    """Репроецирует Shapely-геометрию из UTM в WGS84 по контексту."""
+    """Reproject Shapely geometry from UTM (meters) to WGS84."""
     if isinstance(g, Point):
         x, y = ctx.to_wgs.transform(g.x, g.y)
         return Point(x, y)
@@ -125,10 +123,7 @@ def to_wgs_geom(g: base.BaseGeometry, ctx: CRSContext) -> base.BaseGeometry:
 SUPPORTED_GJ_TYPES = {"Point", "LineString", "Polygon", "MultiPolygon"}
 
 def to_utm_geojson(geom_gj: Dict[str, Any], ctx: CRSContext) -> Dict[str, Any]:
-    """
-    GeoJSON (WGS84) -> GeoJSON (UTM метры).
-    Важно: тип остаётся тем же; меняются только числа координат.
-    """
+    """Convert GeoJSON from WGS84 to UTM coordinates."""
     if geom_gj.get("type") not in SUPPORTED_GJ_TYPES:
         raise TypeError(f"Unsupported GeoJSON type: {geom_gj.get('type')}")
     g = shape(geom_gj)
@@ -136,9 +131,7 @@ def to_utm_geojson(geom_gj: Dict[str, Any], ctx: CRSContext) -> Dict[str, Any]:
 
 
 def to_wgs_geojson(geom_gj_m: Dict[str, Any], ctx: CRSContext) -> Dict[str, Any]:
-    """
-    GeoJSON (UTM метры) -> GeoJSON (WGS84).
-    """
+    """Convert GeoJSON from UTM to WGS84 coordinates."""
     if geom_gj_m.get("type") not in SUPPORTED_GJ_TYPES:
         raise TypeError(f"Unsupported GeoJSON type: {geom_gj_m.get('type')}")
     g_m = shape(geom_gj_m)
@@ -148,21 +141,18 @@ def to_wgs_geojson(geom_gj_m: Dict[str, Any], ctx: CRSContext) -> Dict[str, Any]
 # -------------------------- пакетные удобные функции -------------------------- #
 
 def to_utm_many(geoms_wgs: Iterable[base.BaseGeometry], ctx: CRSContext) -> List[base.BaseGeometry]:
-    """Пакетно репроецирует список Shapely-геометрий в UTM."""
+    """Batch reproject geometries from WGS84 to UTM."""
     return [to_utm_geom(g, ctx) for g in geoms_wgs]
 
 def to_wgs_many(geoms_m: Iterable[base.BaseGeometry], ctx: CRSContext) -> List[base.BaseGeometry]:
-    """Пакетно репроецирует список Shapely-геометрий в WGS84."""
+    """Batch reproject geometries from UTM to WGS84."""
     return [to_wgs_geom(g, ctx) for g in geoms_m]
 
 
 # ------------------------------- удобные шорткаты ------------------------------- #
 
 def context_from_many_geojson(geoms_gj: Iterable[Dict[str, Any]]) -> CRSContext:
-    """
-    Собирает объединённый центроид по нескольким GeoJSON и выбирает UTM-зону.
-    Удобно вызывать, если есть поле + ВПП + NFZ.
-    """
+    """Create CRSContext by centroid of multiple GeoJSON geometries."""
     geoms = [shape(g) for g in geoms_gj if g]
     if not geoms:
         # дефолт — центр Москвы

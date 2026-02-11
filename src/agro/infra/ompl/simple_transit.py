@@ -1,6 +1,4 @@
-# === OMPL (SE2 Dubins) — максимально простой маршрут:
-# runway_end → swath_start и swath_end → runway_end
-# с упором на OMPL (PRM*, PathSimplifier), без ручной "подрезки хвостов".
+"""Simple OMPL (Dubins) transit paths without NFZ."""
 
 import math
 from typing import Tuple, List, Optional, Dict
@@ -10,9 +8,11 @@ from ompl import geometric as og
 
 # ---------- базовые утилиты ----------
 def heading(a: Tuple[float,float], b: Tuple[float,float]) -> float:
+    """Return heading angle (radians) from a to b."""
     return math.atan2(b[1]-a[1], b[0]-a[0])
 
 def bounds_xy(points: List[Tuple[float,float]], margin: float) -> ob.RealVectorBounds:
+    """Compute bounding box for points with margin."""
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     b = ob.RealVectorBounds(2)
@@ -21,17 +21,20 @@ def bounds_xy(points: List[Tuple[float,float]], margin: float) -> ob.RealVectorB
     return b
 
 def make_space(Rmin: float, bnds: ob.RealVectorBounds) -> ob.DubinsStateSpace:
+    """Create Dubins state space with bounds."""
     sp = ob.DubinsStateSpace(Rmin)
     sp.setBounds(bnds)
     return sp
 
 def make_state(space, x, y, yaw):
+    """Create a Dubins state."""
     s = ob.State(space)
     s().setXY(float(x), float(y))
     s().setYaw(float(yaw))
     return s
 
 def simplify(space, path: og.PathGeometric, simplify_time: float, interp_n: int) -> og.PathGeometric:
+    """Simplify and interpolate an OMPL path."""
     si = ob.SpaceInformation(space)
     ps = og.PathSimplifier(si)
     try: ps.reduceVertices(path)
@@ -45,6 +48,7 @@ def simplify(space, path: og.PathGeometric, simplify_time: float, interp_n: int)
     return path
 
 def path_to_xy(path: og.PathGeometric) -> List[Tuple[float,float]]:
+    """Convert OMPL path to list of XY coordinates."""
     out=[]
     for st in path.getStates():
         out.append((st.getX(), st.getY()))
@@ -61,6 +65,7 @@ def plan_pose_to_pose(
     simplify_time: float = 0.8,
     interp_n: int = 600,
 ) -> Optional[List[Tuple[float,float]]]:
+    """Plan Dubins path between two poses."""
     space = make_space(Rmin, bnds)
     si = ob.SpaceInformation(space)
 
@@ -100,6 +105,7 @@ def ompl_start_end_points_swath(
     range_factor: float = 3.0,      # длина ребра графа ≈ range_factor*Rmin
     interp_n: int = 700             # плотность отрисовки пути
 ) -> Dict[str, List[Tuple[float,float]]]:
+    """Plan runway-to-swath and swath-to-runway paths."""
     # курсы целей (здесь — минимальная логика: курс цели = вдоль соответствующей линии)
     yaw_start_runway = heading(runway[0], runway[1])
     yaw_first_swath = heading(first_swath[0], first_swath[1])

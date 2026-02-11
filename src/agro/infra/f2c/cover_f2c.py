@@ -1,4 +1,5 @@
-# route/cover_f2c.py
+"""Fields2Cover-based coverage planning and swath routing."""
+
 from __future__ import annotations
 
 import math
@@ -19,15 +20,15 @@ from agro.domain.routing.swaths_path import build_swath_route_min_hops
 # ============================================================
 
 def _xy(pt) -> tuple[float, float]:
-    """Возвращает (x, y) из точки (x,y) или (x,y,z)."""
+    """Return (x, y) from a point tuple (x, y[, z])."""
     return float(pt[0]), float(pt[1])
 
 def _ls_2d(ls: LineString) -> LineString:
-    """Обрезает Z-координату, если она присутствует."""
+    """Drop Z coordinate if present."""
     return LineString([_xy(p) for p in ls.coords])
 
 def _ring_from_coords(coords):
-    """Shapely coords -> f2c.LinearRing (замыкаем при необходимости)."""
+    """Convert coordinates to f2c.LinearRing and close if needed."""
     ring = f2c.LinearRing()
     if coords and coords[0] != coords[-1]:
         coords = list(coords) + [coords[0]]
@@ -36,8 +37,7 @@ def _ring_from_coords(coords):
     return ring
 
 def _cells_from_shapely(poly: Polygon) -> f2c.Cells:
-    """Shapely Polygon (в метрах) -> f2c.Cells с одним f2c.Cell.
-       Внутренние кольца (interiors) трактуем как отверстия."""
+    """Convert Shapely polygon (meters) to f2c.Cells with holes."""
     assert isinstance(poly, Polygon), "Ожидается shapely.Polygon (в метрах)"
     cell = f2c.Cell()
     cell.addRing(_ring_from_coords(list(poly.exterior.coords)))
@@ -48,12 +48,12 @@ def _cells_from_shapely(poly: Polygon) -> f2c.Cells:
     return cells
 
 def _to_shapely_linestring(f2c_ls) -> LineString:
-    """f2c LineString -> shapely LineString через GeoJSON; затем 2D."""
+    """Convert f2c LineString to Shapely LineString (2D)."""
     gj = json.loads(f2c_ls.exportToJson())
     return _ls_2d(shp_shape(gj))
 
 def _iter_swaths(swaths_obj) -> Iterable:
-    """Надёжная итерация по контейнеру swaths в разных сборках F2C."""
+    """Iterate over swaths container for different F2C builds."""
     n = swaths_obj.size() if hasattr(swaths_obj, "size") else None
     if isinstance(n, int) and n >= 0:
         for i in range(n):
@@ -74,7 +74,7 @@ def _iter_swaths(swaths_obj) -> Iterable:
         pass
 
 def _swath_to_shapely(swath_obj) -> LineString:
-    """Берём у swath линию (getLineString/toLineString/…) и конвертируем в shapely 2D."""
+    """Convert a swath object to a Shapely LineString (2D)."""
     for name in ("getLineString", "toLineString", "getPath", "lineString"):
         if hasattr(swath_obj, name):
             return _to_shapely_linestring(getattr(swath_obj, name)())
@@ -87,10 +87,7 @@ def get_best_variant_by_runway(
     swaths: "f2c.Swaths",
     sorter,
 ):
-    """
-    Выбирает variant=0 или 1 так, чтобы первая точка маршрута была ближе всего
-    к последней точке ВПП (runway_m). Возвращает: best_variant
-    """
+    """Pick swath ordering variant closest to runway end."""
     if runway_m.geom_type != "LineString":
         runway_m = LineString(runway_m)  # на случай, если пришёл массив координат
     runway_end = Point(runway_m.coords[-1])
@@ -122,9 +119,11 @@ def get_best_variant_by_runway(
 # ============================================================
 
 def _heading(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Return heading (radians) from a to b."""
     return math.atan2(b[1] - a[1], b[0] - a[0])
 
 def _bounds_xy(points: List[Tuple[float, float]], margin: float):
+    """Compute XY bounds with margin."""
     b = ob.RealVectorBounds(2)
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
@@ -133,17 +132,20 @@ def _bounds_xy(points: List[Tuple[float, float]], margin: float):
     return b
 
 def _make_space(Rmin: float, bnds):
+    """Create Dubins state space with bounds."""
     sp = ob.DubinsStateSpace(Rmin)
     sp.setBounds(bnds)
     return sp
 
 def _make_state(space, x, y, yaw):
+    """Create a Dubins state."""
     s = ob.State(space)
     s().setXY(float(x), float(y))
     s().setYaw(float(yaw))
     return s
 
 def _simplify(space, path: "og.PathGeometric", simplify_time: float, interp_n: int):
+    """Simplify and interpolate a path."""
     si = ob.SpaceInformation(space)
     ps = og.PathSimplifier(si)
     try: ps.reduceVertices(path)
@@ -157,6 +159,7 @@ def _simplify(space, path: "og.PathGeometric", simplify_time: float, interp_n: i
     return path
 
 def _path_to_xy(path: "og.PathGeometric") -> List[Tuple[float, float]]:
+    """Convert OMPL path to list of XY points."""
     out = []
     for st in path.getStates():
         out.append((st.getX(), st.getY()))
@@ -172,6 +175,7 @@ def plan_pose_to_pose(
     simplify_time: float = 0.8,
     interp_n: int = 600,
 ) -> Optional[List[Tuple[float, float]]]:
+    """Plan Dubins path between two poses."""
     space = _make_space(Rmin, bnds)
     si = ob.SpaceInformation(space)
 
@@ -206,12 +210,19 @@ def ompl_transitions_for_swath_route(
     range_factor: float = 3.0,
     interp_n: int = 700,
 ) -> Dict[str, Any]:
-    """
-    route: список сегментов:
-      [{"swath_id":..., "start":(x,y), "end":(x,y)}, ...]
+    """Compute OMPL transitions between swaths in a route.
 
-    Возвращает:
-      {"transitions": [xy0, xy1, ...], "fail_index": int|None}
+    Args:
+        route: List of route segments with start/end coordinates.
+        Rmin: Minimum turning radius.
+        margin_factor: Boundary margin factor.
+        time_limit: Planning time limit per transition.
+        simplify_time: Simplification time for OMPL path.
+        range_factor: Planner range factor.
+        interp_n: Interpolation points per path.
+
+    Returns:
+        Dict with `transitions` list and optional `fail_index`.
     """
     if len(route) < 2:
         return {"transitions": [], "fail_index": None}
@@ -258,6 +269,7 @@ def ompl_transitions_for_swath_route(
 
 
 def _reverse_linestring(ls: LineString) -> LineString:
+    """Return LineString with reversed coordinate order."""
     return LineString(list(ls.coords)[::-1])
 
 
@@ -266,11 +278,7 @@ def _build_cover_path_from_route_and_transitions(
     route: List[Dict[str, Any]],
     transitions: List[List[Tuple[float, float]]],
 ) -> tuple[List[LineString], LineString]:
-    """
-    Собирает:
-      - ordered_swaths: список сватов в порядке пролёта (LineString, в нужном направлении)
-      - cover_path: один LineString из кусков (сват -> переход -> сват -> ...)
-    """
+    """Assemble ordered swaths and a single cover path from transitions."""
     ordered_swaths: List[LineString] = []
     coords_all: List[Tuple[float, float]] = []
 
@@ -316,6 +324,7 @@ def _build_cover_path_from_route_and_transitions(
 
 @dataclass
 class CoverResult:
+    """Coverage result with swaths and combined path."""
     swaths: List[LineString]     # отдельные проходы по полю (в метрах, 2D)
     cover_path: LineString       # единый плавный путь (в метрах, 2D)
     entry_pt: Point              # первая точка cover_path (в метрах)
@@ -338,10 +347,20 @@ def build_cover(
     use_continuous_curvature: bool = True,
     min_turn_radius_m: Optional[float] = None,
 ) -> CoverResult:
-    """
-    Строит покрытие поля целиком с помощью Fields2Cover v2.0.
-    ВХОД: геометрии должны быть в МЕТРАХ (UTM/локальная проекция).
-    БЕЗ фолбэков: при ошибке F2C бросит исключение.
+    """Build full field coverage using Fields2Cover.
+
+    Args:
+        field_poly_m: Field polygon in meters (UTM).
+        runway_m: Runway centerline in meters (UTM).
+        spray_width_m: Spray width in meters.
+        headland_factor: Headland width in robot widths.
+        objective: Optimization objective.
+        route_order: Swath traversal order.
+        use_continuous_curvature: Use continuous curvature planning.
+        min_turn_radius_m: Minimum turning radius in meters.
+
+    Returns:
+        CoverResult with swaths, cover path, entry/exit points, and angle.
     """
     if field_poly_m.is_empty:
         raise ValueError("Поле пустое")

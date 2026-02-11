@@ -1,15 +1,7 @@
-"""
-geo/utils.py — гео-утилиты для маршрутизатора
+"""Geometry utilities for routing.
 
-Функционал:
-- площадь/длины/пересечения;
-- буферы полигонов и объединение NFZ;
-- эвристика "прямая или обход по вершинам" для долёта/возврата;
-- ориентация поля (угол длинной оси) через minimum_rotated_rectangle;
-- хелперы для runway (первая/последняя точка, курсы, проекция точки на ось).
-
-Все функции работают с Shapely-геометриями в ОДНОМ CRS.
-Для метрических расчётов используйте UTM (см. geo/crs.py).
+All functions expect Shapely geometries in a single CRS (preferably UTM for
+metric computations).
 """
 
 from __future__ import annotations
@@ -25,14 +17,14 @@ from shapely.ops import unary_union
 # ----------------------------- базовые метрики ----------------------------- #
 
 def polygon_area_ha(poly: Polygon) -> float:
-    """Площадь полигона в гектарах."""
+    """Return polygon area in hectares."""
     if not isinstance(poly, Polygon):
         raise TypeError("polygon_area_ha expects a shapely Polygon")
     return abs(poly.area) / 10_000.0
 
 
 def line_length_m(line: LineString) -> float:
-    """Длина линии в метрах (если CRS — метрический, напр. UTM)."""
+    """Return line length in meters for metric CRS (UTM)."""
     if not isinstance(line, LineString):
         raise TypeError("line_length_m expects a shapely LineString")
     return float(line.length)
@@ -41,7 +33,7 @@ def line_length_m(line: LineString) -> float:
 # -------------------------- объединение и буферы --------------------------- #
 
 def union_polygons(polys: Iterable[Polygon]) -> Polygon | None:
-    """Объединение нескольких полигонов. Возвращает Polygon или MultiPolygon->Polygon (unary_union)."""
+    """Union multiple polygons into a single geometry."""
     polys = [p for p in polys if p and not p.is_empty]
     if not polys:
         return None
@@ -52,12 +44,12 @@ def buffer_polygon(poly: Polygon, dist_m: float, *,
                    join_style: int = 1,  # 1=round, 2=mitre, 3=bevel
                    cap_style: int = 1     # 1=round, 2=flat, 3=square (для линейных, на всякий)
                    ) -> Polygon:
-    """Буфер полигона на dist_m. По умолчанию закруглённые углы (round)."""
+    """Buffer polygon by distance in meters."""
     return poly.buffer(dist_m, join_style=join_style, cap_style=cap_style)
 
 
 def buffer_many(polys: Iterable[Polygon], dist_m: float) -> Polygon | None:
-    """Буферим каждый полигон и объединяем."""
+    """Buffer each polygon and union the result."""
     grown = [buffer_polygon(p, dist_m) for p in polys if p and not p.is_empty]
     return union_polygons(grown)
 
@@ -65,7 +57,7 @@ def buffer_many(polys: Iterable[Polygon], dist_m: float) -> Polygon | None:
 # ---------------------------- пересечения/касания --------------------------- #
 
 def intersects_any(geom, polys: Iterable[Polygon]) -> bool:
-    """Проверка: пересекается ли geom с любым полигоном из списка."""
+    """Return True if geometry intersects any polygon in the list."""
     for p in polys:
         if p and not p.is_empty and geom.intersects(p):
             return True
@@ -73,7 +65,7 @@ def intersects_any(geom, polys: Iterable[Polygon]) -> bool:
 
 
 def first_intersecting(geom, polys: Iterable[Polygon]) -> Optional[Polygon]:
-    """Вернёт первый полигон, который пересекает geom (или None)."""
+    """Return the first polygon intersecting the geometry, if any."""
     for p in polys:
         if p and not p.is_empty and geom.intersects(p):
             return p
@@ -83,7 +75,7 @@ def first_intersecting(geom, polys: Iterable[Polygon]) -> Optional[Polygon]:
 # ---------------------------- runway convenience ---------------------------- #
 
 def line_endpoints(line: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-    """(x0,y0), (x1,y1) — начало и конец линии."""
+    """Return start/end coordinates of a LineString."""
     if not isinstance(line, LineString):
         raise TypeError("line_endpoints expects LineString")
     coords = list(line.coords)
@@ -95,14 +87,14 @@ def line_endpoints(line: LineString) -> Tuple[Tuple[float, float], Tuple[float, 
 
 
 def heading_deg_of_segment(p0: Tuple[float, float], p1: Tuple[float, float]) -> float:
-    """Курс сегмента в градусах [0..360)."""
+    """Return segment heading in degrees [0..360)."""
     dx, dy = p1[0] - p0[0], p1[1] - p0[1]
     ang = math.degrees(math.atan2(dy, dx))
     return (ang + 360.0) % 360.0
 
 
 def runway_start_heading_deg(centerline: LineString) -> float:
-    """Курс первого сегмента оси ВПП (если один пункт — 0.0)."""
+    """Heading of the first runway segment in degrees."""
     coords = list(centerline.coords)
     if len(coords) >= 2:
         return heading_deg_of_segment(coords[0], coords[1])
@@ -110,7 +102,7 @@ def runway_start_heading_deg(centerline: LineString) -> float:
 
 
 def runway_end_heading_deg(centerline: LineString) -> float:
-    """Курс последнего сегмента оси ВПП, направленный к концу."""
+    """Heading of the last runway segment toward the end point."""
     coords = list(centerline.coords)
     if len(coords) >= 2:
         return heading_deg_of_segment(coords[-2], coords[-1])
@@ -118,7 +110,7 @@ def runway_end_heading_deg(centerline: LineString) -> float:
 
 
 def project_point_on_line(pt: Point, line: LineString) -> Point:
-    """Проекция точки на линию (ближайшая точка линии)."""
+    """Project a point onto a line (nearest point)."""
     s = line.project(pt)
     return line.interpolate(s)
 
@@ -126,10 +118,7 @@ def project_point_on_line(pt: Point, line: LineString) -> Point:
 # ------------------- ориентация поля для F2C (простой способ) ------------------- #
 
 def field_long_axis_angle_deg(field: Polygon) -> float:
-    """
-    Возвращает угол (в градусах [0..180)) длинной оси минимального повернутого прямоугольника поля.
-    Угол измеряется относительно оси X (в направлении на восток).
-    """
+    """Return the long-axis angle of a field in degrees [0..180)."""
     if not isinstance(field, Polygon):
         raise TypeError("field_long_axis_angle_deg expects Polygon")
     mrr = field.minimum_rotated_rectangle
@@ -151,10 +140,7 @@ def field_long_axis_angle_deg(field: Polygon) -> float:
 # ------------------------ простая эвристика обхода NFZ ------------------------ #
 
 def _closest_vertices_to_line(nfz: Polygon, start: Tuple[float, float], goal: Tuple[float, float]) -> List[Tuple[float, float]]:
-    """
-    Возвращает 2–3 вершин полигона, ближайших к прямой (start->goal),
-    отсортированных по возрастанию расстояния.
-    """
+    """Return nearest NFZ vertices to a start-goal line."""
     line = LineString([start, goal])
     verts = list(nfz.exterior.coords)
     verts.sort(key=lambda v: line.distance(Point(v)))
@@ -165,12 +151,7 @@ def _closest_vertices_to_line(nfz: Polygon, start: Tuple[float, float], goal: Tu
 def straight_or_vertex_avoid(start: Tuple[float, float],
                              goal: Tuple[float, float],
                              nfz_polys: Iterable[Polygon]) -> LineString:
-    """
-    Эвристика для транзита:
-    - если прямая не пересекает NFZ -> вернуть прямую;
-    - иначе пытаемся построить ломаную через 1–2 ближайшие вершины мешающего полигона;
-    - если не удалось — возвращаем исходную прямую (как fallback, но ожидается, что проверка пересечений будет выше).
-    """
+    """Heuristic to avoid NFZ by using a direct line or polygon vertices."""
     direct = LineString([start, goal])
     union_nfz = union_polygons(nfz_polys)
     if not union_nfz or not direct.intersects(union_nfz):
