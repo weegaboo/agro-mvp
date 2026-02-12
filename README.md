@@ -15,12 +15,13 @@ Services:
 - frontend: http://localhost:3000
 - backend health: http://localhost:8000/health
 - backend planner endpoint: `POST http://localhost:8000/planner/build-from-project`
+- backend planner upload endpoint: `POST http://localhost:8000/planner/build-from-upload`
 - postgres: localhost:5432
 
 Planner smoke flow:
 - open http://localhost:3000/app
-- enter absolute path to project JSON (inside API container filesystem, usually under `/app/...`)
-- click `Build route`
+- upload project JSON and click `Build from upload`
+- or enter absolute path to project JSON inside API container (`/app/...`) and click `Build from path`
 
 ## Backend tests
 

@@ -43,3 +43,19 @@ def test_build_route_from_project_not_found() -> None:
 
     assert response.status_code == 404
     assert "Файл не найден" in response.json()["detail"]
+
+
+def test_build_route_from_upload_ok() -> None:
+    app.dependency_overrides[get_planner_service] = lambda: _OkPlanner()
+    try:
+        response = client.post(
+            "/planner/build-from-upload",
+            files={"file": ("project.json", b'{"geoms": {}}', "application/json")},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["route"]["metrics"]["length_total_m"] == 123.0
+    assert body["logs"][0].startswith("build /tmp/")
