@@ -16,12 +16,20 @@ Services:
 - backend health: http://localhost:8000/health
 - backend planner endpoint: `POST http://localhost:8000/planner/build-from-project`
 - backend planner upload endpoint: `POST http://localhost:8000/planner/build-from-upload`
+- backend missions endpoints:
+  - `POST http://localhost:8000/missions` (multipart file upload)
+  - `GET http://localhost:8000/missions`
+  - `GET http://localhost:8000/missions/{id}`
 - postgres: localhost:5432
 
 Planner smoke flow:
 - open http://localhost:3000/app
 - upload project JSON and click `Build from upload`
 - or enter absolute path to project JSON inside API container (`/app/...`) and click `Build from path`
+- mission storage smoke flow:
+  - `curl -F "file=@/absolute/path/project.json" http://localhost:8000/missions`
+  - `curl http://localhost:8000/missions`
+  - `curl http://localhost:8000/missions/1`
 
 ## Backend tests
 
