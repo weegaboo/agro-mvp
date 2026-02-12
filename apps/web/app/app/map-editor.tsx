@@ -28,8 +28,8 @@ export default function MapEditor({ drawTarget, geoms, routeGeo, onCreateGeometr
     circle: false,
     marker: false,
     circlemarker: false,
-    polygon: drawTarget === "field" || drawTarget === "nfz",
-    polyline: drawTarget === "runway",
+    polygon: true,
+    polyline: true,
   };
 
   return (
@@ -42,10 +42,14 @@ export default function MapEditor({ drawTarget, geoms, routeGeo, onCreateGeometr
 
         <FeatureGroup>
           <EditControl
+            key={`draw-${drawTarget}`}
             position="topleft"
             onCreated={(event) => {
               const geometry = event.layer.toGeoJSON().geometry as GeoJsonObject;
-              onCreateGeometry(drawTarget, geometry);
+              const target: DrawTarget = event.layerType === "polyline"
+                ? "runway"
+                : (drawTarget === "nfz" ? "nfz" : "field");
+              onCreateGeometry(target, geometry);
             }}
             draw={drawConfig}
             edit={{ edit: false, remove: false }}

@@ -36,6 +36,10 @@ type AircraftParams = {
   fuel_reserve_l: number;
   mix_rate_l_per_ha: number;
   fuel_burn_l_per_km: number;
+  headland_factor: number;
+  route_order: "snake" | "boustro" | "spiral" | "straight_loops";
+  objective: "n_swath" | "swath_length" | "field_coverage" | "overlap";
+  use_cc: boolean;
 };
 
 type GeomsState = {
@@ -68,6 +72,10 @@ export default function AppPage() {
     fuel_reserve_l: 5,
     mix_rate_l_per_ha: 10,
     fuel_burn_l_per_km: 0.35,
+    headland_factor: 3,
+    route_order: "snake",
+    objective: "n_swath",
+    use_cc: true,
   });
   const [missions, setMissions] = useState<MissionListItem[]>([]);
   const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
@@ -134,7 +142,13 @@ export default function AppPage() {
   const buildMission = async () => {
     if (!token) return;
     if (!geoms.field || !geoms.runway_centerline) {
-      setError("Field polygon and runway line are required");
+      const missing = [
+        !geoms.field ? "field polygon" : null,
+        !geoms.runway_centerline ? "runway line" : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      setError(`Missing required geometry: ${missing}`);
       return;
     }
 
@@ -176,37 +190,66 @@ export default function AppPage() {
         <h2>Aircraft & Route Params</h2>
         <label>
           Spray width, m
-          <input type="number" value={aircraft.spray_width_m} onChange={(e) => setAircraft({ ...aircraft, spray_width_m: Number(e.target.value) })} />
+          <input min={1} max={200} step={1} type="number" value={aircraft.spray_width_m} onChange={(e) => setAircraft({ ...aircraft, spray_width_m: Number(e.target.value) })} />
         </label>
         <label>
           Turn radius, m
-          <input type="number" value={aircraft.turn_radius_m} onChange={(e) => setAircraft({ ...aircraft, turn_radius_m: Number(e.target.value) })} />
+          <input min={1} max={500} step={1} type="number" value={aircraft.turn_radius_m} onChange={(e) => setAircraft({ ...aircraft, turn_radius_m: Number(e.target.value) })} />
         </label>
         <label>
           Total capacity, l
-          <input type="number" value={aircraft.total_capacity_l} onChange={(e) => setAircraft({ ...aircraft, total_capacity_l: Number(e.target.value) })} />
+          <input min={1} max={10000} step={1} type="number" value={aircraft.total_capacity_l} onChange={(e) => setAircraft({ ...aircraft, total_capacity_l: Number(e.target.value) })} />
         </label>
         <label>
           Fuel reserve, l
-          <input type="number" value={aircraft.fuel_reserve_l} onChange={(e) => setAircraft({ ...aircraft, fuel_reserve_l: Number(e.target.value) })} />
+          <input min={0} max={500} step={0.5} type="number" value={aircraft.fuel_reserve_l} onChange={(e) => setAircraft({ ...aircraft, fuel_reserve_l: Number(e.target.value) })} />
         </label>
         <label>
           Mix rate, l/ha
-          <input type="number" step="0.1" value={aircraft.mix_rate_l_per_ha} onChange={(e) => setAircraft({ ...aircraft, mix_rate_l_per_ha: Number(e.target.value) })} />
+          <input min={0} max={200} type="number" step={0.5} value={aircraft.mix_rate_l_per_ha} onChange={(e) => setAircraft({ ...aircraft, mix_rate_l_per_ha: Number(e.target.value) })} />
         </label>
         <label>
           Fuel burn, l/km
-          <input type="number" step="0.01" value={aircraft.fuel_burn_l_per_km} onChange={(e) => setAircraft({ ...aircraft, fuel_burn_l_per_km: Number(e.target.value) })} />
+          <input min={0} max={10} type="number" step={0.01} value={aircraft.fuel_burn_l_per_km} onChange={(e) => setAircraft({ ...aircraft, fuel_burn_l_per_km: Number(e.target.value) })} />
+        </label>
+        <label>
+          Headland factor (x width)
+          <input min={0} max={8} step={0.5} type="number" value={aircraft.headland_factor} onChange={(e) => setAircraft({ ...aircraft, headland_factor: Number(e.target.value) })} />
+        </label>
+        <label>
+          Route order
+          <select value={aircraft.route_order} onChange={(e) => setAircraft({ ...aircraft, route_order: e.target.value as AircraftParams["route_order"] })}>
+            <option value="snake">snake</option>
+            <option value="boustro">boustro</option>
+            <option value="spiral">spiral</option>
+            <option value="straight_loops">straight_loops</option>
+          </select>
+        </label>
+        <label>
+          Objective
+          <select value={aircraft.objective} onChange={(e) => setAircraft({ ...aircraft, objective: e.target.value as AircraftParams["objective"] })}>
+            <option value="n_swath">n_swath</option>
+            <option value="swath_length">swath_length</option>
+            <option value="field_coverage">field_coverage</option>
+            <option value="overlap">overlap</option>
+          </select>
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={aircraft.use_cc} onChange={(e) => setAircraft({ ...aircraft, use_cc: e.target.checked })} />
+          Use continuous curvature
         </label>
 
         <h3>Geometry Editor</h3>
+        <p>Use map draw tools: polygon for {drawTarget === "nfz" ? "NFZ" : "Field"}, polyline for Runway.</p>
         <div className="mode-row">
-          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Draw Field</button>
-          <button type="button" className={drawTarget === "runway" ? "" : "secondary"} onClick={() => setDrawTarget("runway")}>Draw Runway</button>
-          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Draw NFZ</button>
+          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Polygon -> Field</button>
+          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Polygon -> NFZ</button>
         </div>
+        <p>Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
         <div className="mode-row">
           <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Clear Field</button>
+        </div>
+        <div className="mode-row">
           <button type="button" className="secondary" onClick={() => clearGeometry("runway")}>Clear Runway</button>
           <button type="button" className="secondary" onClick={() => clearGeometry("nfz")}>Clear NFZ</button>
         </div>
