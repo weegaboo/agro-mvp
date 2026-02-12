@@ -79,6 +79,16 @@ export default function AppPage() {
   });
   const [missions, setMissions] = useState<MissionListItem[]>([]);
   const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
+  const [mapStyle, setMapStyle] = useState<"scheme" | "satellite" | "hybrid">("scheme");
+  const [routePaletteMode, setRoutePaletteMode] = useState<"full_gradient" | "trips_darkness">("full_gradient");
+  const [selectedTripIndex, setSelectedTripIndex] = useState<number | null>(null);
+  const [layerVisibility, setLayerVisibility] = useState({
+    field: true,
+    nfz: true,
+    swaths: true,
+    transit: true,
+    trips: true,
+  });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -109,6 +119,7 @@ export default function AppPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail ?? "Failed to fetch mission");
       setSelectedMission(payload as MissionDetail);
+      setSelectedTripIndex(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unknown error");
     } finally {
@@ -218,7 +229,15 @@ export default function AppPage() {
         </label>
         <label>
           Route order
-          <select value={aircraft.route_order} onChange={(e) => setAircraft({ ...aircraft, route_order: e.target.value as AircraftParams["route_order"] })}>
+          <select
+            value={aircraft.route_order}
+            onChange={(e) =>
+              setAircraft({
+                ...aircraft,
+                route_order: e.target.value as "snake" | "boustro" | "spiral" | "straight_loops",
+              })
+            }
+          >
             <option value="snake">snake</option>
             <option value="boustro">boustro</option>
             <option value="spiral">spiral</option>
@@ -227,7 +246,15 @@ export default function AppPage() {
         </label>
         <label>
           Objective
-          <select value={aircraft.objective} onChange={(e) => setAircraft({ ...aircraft, objective: e.target.value as AircraftParams["objective"] })}>
+          <select
+            value={aircraft.objective}
+            onChange={(e) =>
+              setAircraft({
+                ...aircraft,
+                objective: e.target.value as "n_swath" | "swath_length" | "field_coverage" | "overlap",
+              })
+            }
+          >
             <option value="n_swath">n_swath</option>
             <option value="swath_length">swath_length</option>
             <option value="field_coverage">field_coverage</option>
@@ -235,16 +262,64 @@ export default function AppPage() {
           </select>
         </label>
         <label className="checkbox-row">
-          <input type="checkbox" checked={aircraft.use_cc} onChange={(e) => setAircraft({ ...aircraft, use_cc: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={aircraft.use_cc}
+            onChange={(e) =>
+              setAircraft({
+                ...aircraft,
+                use_cc: e.target.checked,
+              })
+            }
+          />
           Use continuous curvature
         </label>
 
         <h3>Geometry Editor</h3>
         <p>Use map draw tools: polygon for {drawTarget === "nfz" ? "NFZ" : "Field"}, polyline for Runway.</p>
         <div className="mode-row">
-          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Polygon -> Field</button>
-          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Polygon -> NFZ</button>
+          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Polygon to Field</button>
+          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Polygon to NFZ</button>
         </div>
+        <h3>Map Layers</h3>
+        <label>
+          Map style
+          <select value={mapStyle} onChange={(e) => setMapStyle(e.target.value as "scheme" | "satellite" | "hybrid")}>
+            <option value="scheme">Scheme</option>
+            <option value="satellite">Satellite</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+        </label>
+        <label>
+          Route coloring
+          <select
+            value={routePaletteMode}
+            onChange={(e) => setRoutePaletteMode(e.target.value as "full_gradient" | "trips_darkness")}
+          >
+            <option value="full_gradient">All trips: green to dark</option>
+            <option value="trips_darkness">Trips by order: light to dark</option>
+          </select>
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.field} onChange={(e) => setLayerVisibility({ ...layerVisibility, field: e.target.checked })} />
+          Field
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.nfz} onChange={(e) => setLayerVisibility({ ...layerVisibility, nfz: e.target.checked })} />
+          NFZ
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.swaths} onChange={(e) => setLayerVisibility({ ...layerVisibility, swaths: e.target.checked })} />
+          Swaths
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.transit} onChange={(e) => setLayerVisibility({ ...layerVisibility, transit: e.target.checked })} />
+          Transit and route
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.trips} onChange={(e) => setLayerVisibility({ ...layerVisibility, trips: e.target.checked })} />
+          Trips
+        </label>
         <p>Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
         <div className="mode-row">
           <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Clear Field</button>
@@ -262,7 +337,16 @@ export default function AppPage() {
       </section>
 
       <section className="workspace-panel center-panel">
-        <MapEditor drawTarget={drawTarget} geoms={geoms} routeGeo={routeGeo} onCreateGeometry={handleCreateGeometry} />
+        <MapEditor
+          drawTarget={drawTarget}
+          geoms={geoms}
+          routeGeo={routeGeo}
+          mapStyle={mapStyle}
+          routePaletteMode={routePaletteMode}
+          selectedTripIndex={selectedTripIndex}
+          layerVisibility={layerVisibility}
+          onCreateGeometry={handleCreateGeometry}
+        />
       </section>
 
       <section className="workspace-panel right-panel">
@@ -297,16 +381,22 @@ export default function AppPage() {
         {trips.length > 0 && (
           <>
             <h3>Trips</h3>
+            <div className="mode-row">
+              <button type="button" className={selectedTripIndex === null ? "" : "secondary"} onClick={() => setSelectedTripIndex(null)}>
+                All trips
+              </button>
+            </div>
             <div className="trip-list">
               {trips.map((trip, index) => (
-                <div key={index} className="trip-card">
+                <button key={index} type="button" className={`trip-card ${selectedTripIndex === index ? "active" : ""}`} onClick={() => setSelectedTripIndex(index)}>
                   <strong>Trip {index + 1}</strong>
                   <div>Swaths: {String(trip.start_idx)} - {String(trip.end_idx)}</div>
                   <div>Fuel used: {Number(trip.fuel_used_l ?? 0).toFixed(2)} l</div>
                   <div>Mix used: {Number(trip.mix_used_l ?? 0).toFixed(2)} l</div>
-                </div>
+                </button>
               ))}
             </div>
+            {selectedTripIndex !== null && <p>Selected trip uses blue gradient.</p>}
           </>
         )}
 
