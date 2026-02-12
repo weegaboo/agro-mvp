@@ -1,18 +1,52 @@
-# Agro MVP
+# agro-mvp web platform
 
-Build: docker build -t agro-mvp:f2c-src . 
+Monorepo with:
+- `apps/api` - FastAPI backend
+- `apps/web` - Next.js frontend (TypeScript)
+- `packages/planner` - route planning business logic adapter
 
-Run: docker run -d --name agro-mvp -p 8501:8501 -v "$(pwd)":/app agro-mvp:f2c-src
+## Run with Docker Compose
 
+```bash
+docker compose up --build
+```
 
-# Для обновления версии на сервере
-ssh maksimseleznev@89.169.191.52
-cd agro-mvp/
-git fetch origin
-git checkout main
-git pull origin main
-docker ps
-docker kill <container_id>
-docker rm <container_id>
-docker build -t agro-mvp:latest .
-docker run -d --name agro-mvp -p 8501:8501 -v $(pwd)/data:/app/data agro-mvp:latest
+Services:
+- frontend: http://localhost:3000
+- backend health: http://localhost:8000/health
+- backend planner endpoint: `POST http://localhost:8000/planner/build-from-project`
+- postgres: localhost:5432
+
+Planner smoke flow:
+- open http://localhost:3000/app
+- enter absolute path to project JSON (inside API container filesystem, usually under `/app/...`)
+- click `Build route`
+
+## Backend tests
+
+```bash
+docker compose exec api pytest apps/api/tests
+```
+
+## Run frontend separately
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+## Run backend separately
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r apps/api/requirements.txt
+uvicorn app.main:app --app-dir apps/api --reload --host 0.0.0.0 --port 8000
+```
+
+## Alembic migration
+
+```bash
+docker compose exec api alembic -c apps/api/alembic.ini upgrade head
+```
