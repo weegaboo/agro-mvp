@@ -123,6 +123,20 @@ button.secondary {
   align-items: stretch;
 }
 
+.workspace-shell {
+  width: 100vw;
+  min-height: 100vh;
+  display: block;
+  position: relative;
+  padding: 0;
+}
+
+.map-stage {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
 .workspace-panel {
   background: #ffffff;
   border: 1px solid #dbe1ea;
@@ -147,14 +161,104 @@ button.secondary {
   align-content: start;
 }
 
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  height: 100vh;
+  width: min(390px, 92vw);
+  z-index: 1200;
+  background: rgba(255, 255, 255, 0.98);
+  border: none;
+  border-radius: 0;
+  box-shadow: 0 20px 42px rgba(15, 23, 42, 0.25);
+  transition: transform 180ms ease;
+  pointer-events: none;
+}
+
+.drawer-panel.left-panel {
+  left: 0;
+  transform: translateX(-105%);
+}
+
+.drawer-panel.right-panel {
+  right: 0;
+  transform: translateX(105%);
+}
+
+.drawer-panel.left-panel.open,
+.drawer-panel.right-panel.open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
 .map-editor {
   position: relative;
   width: 100%;
-  height: calc(100vh - 64px);
-  min-height: 620px;
-  border-radius: 10px;
+  height: 100vh;
+  min-height: 100vh;
+  border-radius: 0;
   overflow: hidden;
-  border: 1px solid #e2e8f0;
+  border: none;
+}
+
+.drawer-toggle {
+  position: fixed;
+  top: 14px;
+  z-index: 1300;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border-color: rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(6px);
+}
+
+.drawer-toggle.left {
+  left: 14px;
+}
+
+.drawer-toggle.right {
+  right: 14px;
+}
+
+.drawer-toggle.active {
+  background: #1d4ed8;
+}
+
+.map-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  border: none;
+  background: rgba(15, 23, 42, 0.22);
+  cursor: pointer;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.drawer-close {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.panel-status {
+  margin: 0;
+  font-size: 13px;
+  color: #334155;
+}
+
+.error-text {
+  margin: 0;
+  font-size: 13px;
+  color: #b91c1c;
 }
 
 .map-legend {
@@ -294,6 +398,11 @@ pre {
   overflow: auto;
 }
 
+.workspace-shell .leaflet-top.leaflet-left,
+.workspace-shell .leaflet-top.leaflet-right {
+  top: 56px;
+}
+
 @media (max-width: 1200px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -303,8 +412,32 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .drawer-panel {
+    width: min(360px, 92vw);
+  }
+
   .map-editor {
-    height: 420px;
-    min-height: 420px;
+    height: 100vh;
+    min-height: 100vh;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .drawer-toggle {
+    top: 10px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .drawer-panel {
+    width: 100vw;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr;
   }
 }

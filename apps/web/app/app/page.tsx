@@ -91,6 +91,8 @@ export default function AppPage() {
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 
   useEffect(() => {
     const savedToken = localStorage.getItem("agro_access_token");
@@ -133,6 +135,17 @@ export default function AppPage() {
       setError(loadError instanceof Error ? loadError.message : "Failed to load missions");
     });
   }, [token, loadMissions]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLeftDrawerOpen(false);
+        setRightDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const handleCreateGeometry = (target: DrawTarget, geometry: GeoJsonObject) => {
     setGeoms((prev) => {
@@ -194,11 +207,80 @@ export default function AppPage() {
   const metrics = selectedMission?.result_json?.route?.metrics ?? {};
   const logs = selectedMission?.result_json?.logs ?? [];
   const trips = (routeGeo?.trips as Array<Record<string, unknown>> | undefined) ?? [];
+  const hasDrawerOpen = leftDrawerOpen || rightDrawerOpen;
+
+  const toggleLeftDrawer = () => {
+    setLeftDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setRightDrawerOpen(false);
+      return next;
+    });
+  };
+
+  const toggleRightDrawer = () => {
+    setRightDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setLeftDrawerOpen(false);
+      return next;
+    });
+  };
 
   return (
-    <main className="workspace-v2">
-      <section className="workspace-panel left-panel">
-        <h2>Aircraft & Route Params</h2>
+    <main className="workspace-shell">
+      <section className="map-stage">
+        <MapEditor
+          drawTarget={drawTarget}
+          geoms={geoms}
+          routeGeo={routeGeo}
+          mapStyle={mapStyle}
+          routePaletteMode={routePaletteMode}
+          selectedTripIndex={selectedTripIndex}
+          layerVisibility={layerVisibility}
+          onCreateGeometry={handleCreateGeometry}
+        />
+      </section>
+
+      <button
+        type="button"
+        className={`drawer-toggle left ${leftDrawerOpen ? "active" : ""}`}
+        onClick={toggleLeftDrawer}
+        aria-label={leftDrawerOpen ? "Close parameters panel" : "Open parameters panel"}
+      >
+        ☰ Parameters
+      </button>
+      <button
+        type="button"
+        className={`drawer-toggle right ${rightDrawerOpen ? "active" : ""}`}
+        onClick={toggleRightDrawer}
+        aria-label={rightDrawerOpen ? "Close missions panel" : "Open missions panel"}
+      >
+        Missions ☰
+      </button>
+
+      {hasDrawerOpen && (
+        <button
+          type="button"
+          className="map-drawer-backdrop"
+          onClick={() => {
+            setLeftDrawerOpen(false);
+            setRightDrawerOpen(false);
+          }}
+          aria-label="Close side panels"
+        />
+      )}
+
+      <section className={`workspace-panel drawer-panel left-panel ${leftDrawerOpen ? "open" : ""}`}>
+        <div className="drawer-header">
+          <h2>Aircraft & Route Params</h2>
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={() => setLeftDrawerOpen(false)}
+            aria-label="Close parameters panel"
+          >
+            X
+          </button>
+        </div>
         <label>
           Spray width, m
           <input min={1} max={200} step={1} type="number" value={aircraft.spray_width_m} onChange={(e) => setAircraft({ ...aircraft, spray_width_m: Number(e.target.value) })} />
@@ -320,7 +402,7 @@ export default function AppPage() {
           <input type="checkbox" checked={layerVisibility.trips} onChange={(e) => setLayerVisibility({ ...layerVisibility, trips: e.target.checked })} />
           Trip transits (to/from runway)
         </label>
-        <p>Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
+        <p className="panel-status">Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
         <div className="mode-row">
           <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Clear Field</button>
         </div>
@@ -333,24 +415,21 @@ export default function AppPage() {
           {loading ? "Building..." : "Build Mission"}
         </button>
         <button type="button" className="secondary" onClick={handleLogout}>Logout</button>
-        {error && <p>{error}</p>}
+        {error && <p className="error-text">{error}</p>}
       </section>
 
-      <section className="workspace-panel center-panel">
-        <MapEditor
-          drawTarget={drawTarget}
-          geoms={geoms}
-          routeGeo={routeGeo}
-          mapStyle={mapStyle}
-          routePaletteMode={routePaletteMode}
-          selectedTripIndex={selectedTripIndex}
-          layerVisibility={layerVisibility}
-          onCreateGeometry={handleCreateGeometry}
-        />
-      </section>
-
-      <section className="workspace-panel right-panel">
-        <h2>Missions & Stats</h2>
+      <section className={`workspace-panel drawer-panel right-panel ${rightDrawerOpen ? "open" : ""}`}>
+        <div className="drawer-header">
+          <h2>Missions & Stats</h2>
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={() => setRightDrawerOpen(false)}
+            aria-label="Close missions panel"
+          >
+            X
+          </button>
+        </div>
         <div className="mission-list">
           {missions.map((mission) => (
             <button
