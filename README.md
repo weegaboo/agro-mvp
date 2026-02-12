@@ -18,6 +18,7 @@ Services:
 - backend planner upload endpoint: `POST http://localhost:8000/planner/build-from-upload`
 - backend missions endpoints:
   - `POST http://localhost:8000/missions` (multipart file upload)
+  - `POST http://localhost:8000/missions/from-geo` (build from map geometry + aircraft params)
   - `GET http://localhost:8000/missions`
   - `GET http://localhost:8000/missions/{id}`
 - auth endpoints:
@@ -28,8 +29,11 @@ Services:
 Planner smoke flow:
 - open http://localhost:3000/app
 - register or login first
-- upload project JSON and click `Build from upload`
+- draw `Field`, `Runway`, and optional `NFZ` directly on map
+- set aircraft/route params in left panel
+- click `Build Mission`
 - missions are scoped to current user token
+- select mission in the middle panel to inspect metrics, logs, and route map layers (field/NFZ/swaths/transit)
 - mission storage smoke flow:
   - `TOKEN=$(curl -s -X POST http://localhost:8000/auth/register -H 'Content-Type: application/json' -d '{"login":"demo","password":"secret12"}' | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")`
   - `curl -H "Authorization: Bearer $TOKEN" -F "file=@/absolute/path/project.json" http://localhost:8000/missions`

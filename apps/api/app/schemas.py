@@ -52,6 +52,13 @@ class MissionDetailResponse(BaseModel):
     created_at: datetime
 
 
+class MissionFromGeoRequest(BaseModel):
+    """Mission request from direct geometry payload."""
+
+    geoms: dict[str, Any]
+    aircraft: dict[str, Any] = Field(default_factory=dict)
+
+
 class RegisterRequest(BaseModel):
     """Registration payload."""
 

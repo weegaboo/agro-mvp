@@ -21,6 +21,7 @@ from .schemas import (
     LoginRequest,
     MissionCreateResponse,
     MissionDetailResponse,
+    MissionFromGeoRequest,
     MissionListItem,
     RegisterRequest,
 )
@@ -54,6 +55,18 @@ def _build_with_temp_file(
     finally:
         if temp_path:
             Path(temp_path).unlink(missing_ok=True)
+
+
+def _to_mission_response(mission) -> MissionCreateResponse:
+    """Map ORM mission to API response."""
+    return MissionCreateResponse(
+        id=mission.id,
+        user_id=mission.user_id,
+        status=mission.status,
+        input_json=mission.input_json,
+        result_json=mission.result_json,
+        created_at=mission.created_at,
+    )
 
 
 @app.get("/health")
@@ -162,14 +175,36 @@ async def create_mission_from_upload(
     finally:
         await file.close()
 
-    return MissionCreateResponse(
-        id=mission.id,
-        user_id=mission.user_id,
-        status=mission.status,
-        input_json=mission.input_json,
-        result_json=mission.result_json,
-        created_at=mission.created_at,
-    )
+    return _to_mission_response(mission)
+
+
+@app.post("/missions/from-geo", response_model=MissionCreateResponse)
+def create_mission_from_geo(
+    payload: MissionFromGeoRequest,
+    current_user: User = Depends(get_current_user),
+    planner: PlannerService = Depends(get_planner_service),
+    db: Session = Depends(get_db),
+) -> MissionCreateResponse:
+    """Create mission from field/runway/nfz geometry and aircraft params."""
+    input_payload = {"geoms": payload.geoms, "aircraft": payload.aircraft}
+    mission = create_mission(db, input_json=input_payload, user_id=current_user.id)
+    logs: list[str] = []
+    try:
+        route = _build_with_temp_file(
+            planner=planner,
+            raw_bytes=json.dumps(input_payload, ensure_ascii=False).encode("utf-8"),
+            suffix=".json",
+            logs=logs,
+        )
+        mission = mark_mission_success(db, mission, route=route, logs=logs)
+    except ValueError as exc:
+        mission = mark_mission_failed(db, mission, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        mission = mark_mission_failed(db, mission, error=f"Planner error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Planner error: {exc}") from exc
+
+    return _to_mission_response(mission)
 
 
 @app.get("/missions", response_model=list[MissionListItem])

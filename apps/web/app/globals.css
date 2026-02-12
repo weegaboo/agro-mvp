@@ -31,6 +31,16 @@ h1 {
   font-size: 24px;
 }
 
+h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+h3 {
+  margin: 12px 0 8px;
+  font-size: 15px;
+}
+
 form {
   display: grid;
   gap: 12px;
@@ -72,4 +82,158 @@ button,
 button.secondary {
   background: #ffffff;
   color: #0f172a;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 300px 320px 1fr;
+  gap: 16px;
+  align-items: start;
+  justify-content: stretch;
+  width: 100%;
+  max-width: 1500px;
+}
+
+.workspace-v2 {
+  width: 100%;
+  max-width: 1700px;
+  display: grid;
+  grid-template-columns: 320px 1fr 380px;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.workspace-panel {
+  background: #ffffff;
+  border: 1px solid #dbe1ea;
+  border-radius: 12px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.left-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.center-panel {
+  padding: 8px;
+}
+
+.right-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.map-editor {
+  width: 100%;
+  height: calc(100vh - 64px);
+  min-height: 620px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+.mode-row {
+  display: flex;
+  gap: 8px;
+}
+
+.trip-list {
+  display: grid;
+  gap: 8px;
+}
+
+.trip-card {
+  border: 1px solid #dbe1ea;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+  min-height: 220px;
+}
+
+.panel-wide {
+  min-height: 70vh;
+}
+
+.mission-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mission-item {
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mission-item.active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.metric-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.metric-card span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.metric-card strong {
+  font-size: 16px;
+}
+
+.mission-map {
+  height: 420px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+pre {
+  margin: 0;
+  padding: 10px;
+  background: #0b1020;
+  color: #dbeafe;
+  border-radius: 8px;
+  overflow: auto;
+}
+
+@media (max-width: 1200px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-v2 {
+    grid-template-columns: 1fr;
+  }
+
+  .map-editor {
+    height: 420px;
+    min-height: 420px;
+  }
 }

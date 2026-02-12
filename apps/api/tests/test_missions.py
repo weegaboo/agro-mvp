@@ -129,3 +129,40 @@ def test_missions_require_auth() -> None:
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_create_mission_from_geo() -> None:
+    db = _test_db_session()
+
+    def override_get_db():  # noqa: ANN202
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_planner_service] = lambda: _OkPlanner()
+    client = TestClient(app)
+    try:
+        auth = client.post("/auth/register", json={"login": "user3", "password": "secret12"})
+        assert auth.status_code == 200
+        token = auth.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        payload = {
+            "geoms": {
+                "field": {"type": "Polygon", "coordinates": [[[37.6, 55.7], [37.61, 55.7], [37.61, 55.71], [37.6, 55.71], [37.6, 55.7]]]},
+                "runway_centerline": {"type": "LineString", "coordinates": [[37.59, 55.7], [37.595, 55.705]]},
+                "nfz": [],
+            },
+            "aircraft": {"spray_width_m": 20},
+        }
+
+        response = client.post("/missions/from-geo", json=payload, headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "success"
+        assert body["result_json"]["route"]["metrics"]["length_total_m"] == 10.0
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
