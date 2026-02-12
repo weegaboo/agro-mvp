@@ -43,6 +43,11 @@ def test_create_mission_list_and_get() -> None:
 
     client = TestClient(app)
     try:
+        auth = client.post("/auth/register", json={"login": "user1", "password": "secret12"})
+        assert auth.status_code == 200
+        token = auth.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
         create_response = client.post(
             "/missions",
             files={
@@ -52,6 +57,7 @@ def test_create_mission_list_and_get() -> None:
                     "application/json",
                 )
             },
+            headers=headers,
         )
         assert create_response.status_code == 200
         created = create_response.json()
@@ -59,13 +65,13 @@ def test_create_mission_list_and_get() -> None:
         assert created["result_json"]["route"]["metrics"]["length_total_m"] == 10.0
         mission_id = created["id"]
 
-        list_response = client.get("/missions")
+        list_response = client.get("/missions", headers=headers)
         assert list_response.status_code == 200
         items = list_response.json()
         assert len(items) == 1
         assert items[0]["id"] == mission_id
 
-        get_response = client.get(f"/missions/{mission_id}")
+        get_response = client.get(f"/missions/{mission_id}", headers=headers)
         assert get_response.status_code == 200
         detail = get_response.json()
         assert detail["id"] == mission_id
@@ -89,12 +95,37 @@ def test_create_mission_invalid_json() -> None:
 
     client = TestClient(app)
     try:
+        auth = client.post("/auth/register", json={"login": "user2", "password": "secret12"})
+        assert auth.status_code == 200
+        token = auth.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         response = client.post(
             "/missions",
             files={"file": ("project.json", b"{not-json}", "application/json")},
+            headers=headers,
         )
         assert response.status_code == 400
         assert "Invalid JSON payload" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_missions_require_auth() -> None:
+    db = _test_db_session()
+
+    def override_get_db():  # noqa: ANN202
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_planner_service] = lambda: _OkPlanner()
+    client = TestClient(app)
+    try:
+        response = client.get("/missions")
+        assert response.status_code == 403
     finally:
         app.dependency_overrides.clear()
         db.close()

@@ -50,3 +50,26 @@ class MissionDetailResponse(BaseModel):
     input_json: dict[str, Any]
     result_json: dict[str, Any] | None
     created_at: datetime
+
+
+class RegisterRequest(BaseModel):
+    """Registration payload."""
+
+    login: str = Field(..., min_length=3, max_length=100)
+    password: str = Field(..., min_length=6, max_length=255)
+
+
+class LoginRequest(BaseModel):
+    """Login payload."""
+
+    login: str = Field(..., min_length=3, max_length=100)
+    password: str = Field(..., min_length=6, max_length=255)
+
+
+class AuthResponse(BaseModel):
+    """JWT auth response."""
+
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+    login: str

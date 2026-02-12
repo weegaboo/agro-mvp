@@ -23,6 +23,8 @@ services:
     container_name: agro-api
     environment:
       DATABASE_URL: postgresql+psycopg://agro:agro@db:5432/agro
+      JWT_SECRET_KEY: dev-secret-key
+      ACCESS_TOKEN_EXPIRE_MINUTES: 120
     ports:
       - "8000:8000"
     depends_on:

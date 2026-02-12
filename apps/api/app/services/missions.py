@@ -44,13 +44,18 @@ def mark_mission_failed(db: Session, mission: Mission, *, error: str) -> Mission
     return mission
 
 
-def list_missions(db: Session, *, limit: int = 50) -> list[Mission]:
+def list_missions(db: Session, *, user_id: int, limit: int = 50) -> list[Mission]:
     """List latest missions."""
-    stmt: Select[tuple[Mission]] = select(Mission).order_by(Mission.created_at.desc()).limit(limit)
+    stmt: Select[tuple[Mission]] = (
+        select(Mission)
+        .where(Mission.user_id == user_id)
+        .order_by(Mission.created_at.desc())
+        .limit(limit)
+    )
     return list(db.scalars(stmt))
 
 
-def get_mission_by_id(db: Session, mission_id: int) -> Mission | None:
+def get_mission_by_id(db: Session, mission_id: int, *, user_id: int) -> Mission | None:
     """Get mission by id."""
-    stmt: Select[tuple[Mission]] = select(Mission).where(Mission.id == mission_id)
+    stmt: Select[tuple[Mission]] = select(Mission).where(Mission.id == mission_id, Mission.user_id == user_id)
     return db.scalars(stmt).first()

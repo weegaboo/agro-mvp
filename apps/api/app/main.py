@@ -12,14 +12,19 @@ from sqlalchemy.orm import Session
 
 from planner.service import PlannerService
 
-from .deps import get_db, get_planner_service
+from .deps import get_current_user, get_db, get_planner_service
+from .models import User
 from .schemas import (
+    AuthResponse,
     BuildRouteRequest,
     BuildRouteResponse,
+    LoginRequest,
     MissionCreateResponse,
     MissionDetailResponse,
     MissionListItem,
+    RegisterRequest,
 )
+from .services.auth import authenticate_user, create_access_token, create_user, get_user_by_login
 from .services.missions import create_mission, get_mission_by_id, list_missions, mark_mission_failed, mark_mission_success
 
 app = FastAPI(title="Agro API", version="0.1.0")
@@ -55,6 +60,26 @@ def _build_with_temp_file(
 def health() -> dict[str, str]:
     """Liveness endpoint."""
     return {"status": "ok"}
+
+
+@app.post("/auth/register", response_model=AuthResponse)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    """Register user and return JWT token."""
+    if get_user_by_login(db, payload.login):
+        raise HTTPException(status_code=409, detail="Login already exists")
+    user = create_user(db, login=payload.login, password=payload.password)
+    token = create_access_token(user_id=user.id)
+    return AuthResponse(access_token=token, user_id=user.id, login=user.login)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    """Login user and return JWT token."""
+    user = authenticate_user(db, login=payload.login, password=payload.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid login or password")
+    token = create_access_token(user_id=user.id)
+    return AuthResponse(access_token=token, user_id=user.id, login=user.login)
 
 
 @app.post("/planner/build-from-project", response_model=BuildRouteResponse)
@@ -103,7 +128,7 @@ async def build_from_upload(
 @app.post("/missions", response_model=MissionCreateResponse)
 async def create_mission_from_upload(
     file: UploadFile = File(...),
-    user_id: int | None = None,
+    current_user: User = Depends(get_current_user),
     planner: PlannerService = Depends(get_planner_service),
     db: Session = Depends(get_db),
 ) -> MissionCreateResponse:
@@ -117,7 +142,7 @@ async def create_mission_from_upload(
         await file.close()
         raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
 
-    mission = create_mission(db, input_json=input_payload, user_id=user_id)
+    mission = create_mission(db, input_json=input_payload, user_id=current_user.id)
     logs: list[str] = []
 
     try:
@@ -150,12 +175,13 @@ async def create_mission_from_upload(
 @app.get("/missions", response_model=list[MissionListItem])
 def get_missions(
     limit: int = 50,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MissionListItem]:
     """List latest missions."""
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
-    missions = list_missions(db, limit=limit)
+    missions = list_missions(db, user_id=current_user.id, limit=limit)
     return [
         MissionListItem(
             id=mission.id,
@@ -170,10 +196,11 @@ def get_missions(
 @app.get("/missions/{mission_id}", response_model=MissionDetailResponse)
 def get_mission(
     mission_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MissionDetailResponse:
     """Return mission by id."""
-    mission = get_mission_by_id(db, mission_id)
+    mission = get_mission_by_id(db, mission_id, user_id=current_user.id)
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
     return MissionDetailResponse(

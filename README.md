@@ -20,16 +20,21 @@ Services:
   - `POST http://localhost:8000/missions` (multipart file upload)
   - `GET http://localhost:8000/missions`
   - `GET http://localhost:8000/missions/{id}`
+- auth endpoints:
+  - `POST http://localhost:8000/auth/register`
+  - `POST http://localhost:8000/auth/login`
 - postgres: localhost:5432
 
 Planner smoke flow:
 - open http://localhost:3000/app
+- register or login first
 - upload project JSON and click `Build from upload`
-- or enter absolute path to project JSON inside API container (`/app/...`) and click `Build from path`
+- missions are scoped to current user token
 - mission storage smoke flow:
-  - `curl -F "file=@/absolute/path/project.json" http://localhost:8000/missions`
-  - `curl http://localhost:8000/missions`
-  - `curl http://localhost:8000/missions/1`
+  - `TOKEN=$(curl -s -X POST http://localhost:8000/auth/register -H 'Content-Type: application/json' -d '{"login":"demo","password":"secret12"}' | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")`
+  - `curl -H "Authorization: Bearer $TOKEN" -F "file=@/absolute/path/project.json" http://localhost:8000/missions`
+  - `curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/missions`
+  - `curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/missions/1`
 
 ## Backend tests
 
@@ -59,3 +64,11 @@ uvicorn app.main:app --app-dir apps/api --reload --host 0.0.0.0 --port 8000
 ```bash
 docker compose exec api alembic -c apps/api/alembic.ini upgrade head
 ```
+
+
+
+
+DEBUG
+
+docker compose down
+docker compose up --build -d
