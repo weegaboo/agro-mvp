@@ -268,6 +268,12 @@ export default function MapEditor({
     }
     return trips;
   }, [selectedTripIndex, selectedTrip, trips]);
+  const swathsToRender = useMemo(() => {
+    if (selectedTripIndex !== null && selectedRange) {
+      return swaths.slice(selectedRange.start, selectedRange.end + 1);
+    }
+    return swaths;
+  }, [selectedTripIndex, selectedRange, swaths]);
 
   return (
     <div className="map-editor">
@@ -320,24 +326,20 @@ export default function MapEditor({
         {runwayGeo && <GeoJSON data={runwayGeo} style={{ color: "#0f172a", weight: 5, opacity: 0.9 }} />}
 
         {layerVisibility.swaths &&
-          selectedTripIndex !== null &&
-          selectedRange &&
-          swaths
-            .slice(selectedRange.start, selectedRange.end + 1)
-            .map((swath, index) => (
-              <GeoJSON
-                key={`sel-swath-${index}`}
-                data={swath}
-                style={{ color: "#2563eb", weight: 2.2, opacity: 0.85 }}
-              />
-            ))}
+          swathsToRender.map((swath, index) => (
+            <GeoJSON
+              key={`swath-${selectedTripIndex ?? "all"}-${index}`}
+              data={swath}
+              style={{ color: "#2563eb", weight: 2.2, opacity: 0.85 }}
+            />
+          ))}
 
         {layerVisibility.transit &&
           workSegmentsToRender.map((seg, index) => (
             <Polyline key={`work-seg-${index}`} positions={seg.coords} pathOptions={{ color: seg.color, weight: 3 }} />
           ))}
 
-        {layerVisibility.transit &&
+        {layerVisibility.trips &&
           transitSet.map((trip, idx) => {
             const dashColor =
               selectedTripIndex !== null
@@ -372,8 +374,8 @@ export default function MapEditor({
         <div><span className="legend-dot field" />Field</div>
         <div><span className="legend-dot runway" />Runway</div>
         <div><span className="legend-dot nfz" />NFZ</div>
-        <div><span className="legend-dot swath" />Swaths / Work path</div>
-        <div><span className="legend-dot route" />Transit (dashed)</div>
+        <div><span className="legend-dot swath" />Swaths</div>
+        <div><span className="legend-dot route" />Work path / Trip transit</div>
       </div>
     </div>
   );

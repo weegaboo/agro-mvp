@@ -115,10 +115,10 @@ button.secondary {
 }
 
 .workspace-v2 {
-  width: 100%;
-  max-width: 1700px;
+  width: calc(100vw - 24px);
+  max-width: none;
   display: grid;
-  grid-template-columns: 320px 1fr 380px;
+  grid-template-columns: minmax(300px, 24vw) minmax(560px, 1fr) minmax(340px, 28vw);
   gap: 14px;
   align-items: stretch;
 }

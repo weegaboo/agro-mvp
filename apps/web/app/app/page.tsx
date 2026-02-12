@@ -79,7 +79,7 @@ export default function AppPage() {
   });
   const [missions, setMissions] = useState<MissionListItem[]>([]);
   const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
-  const [mapStyle, setMapStyle] = useState<"scheme" | "satellite" | "hybrid">("scheme");
+  const [mapStyle, setMapStyle] = useState<"scheme" | "satellite" | "hybrid">("hybrid");
   const [routePaletteMode, setRoutePaletteMode] = useState<"full_gradient" | "trips_darkness">("full_gradient");
   const [selectedTripIndex, setSelectedTripIndex] = useState<number | null>(null);
   const [layerVisibility, setLayerVisibility] = useState({
@@ -314,11 +314,11 @@ export default function AppPage() {
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.transit} onChange={(e) => setLayerVisibility({ ...layerVisibility, transit: e.target.checked })} />
-          Transit and route
+          Work path (route)
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.trips} onChange={(e) => setLayerVisibility({ ...layerVisibility, trips: e.target.checked })} />
-          Trips
+          Trip transits (to/from runway)
         </label>
         <p>Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
         <div className="mode-row">
