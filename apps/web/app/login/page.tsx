@@ -28,12 +28,12 @@ export default function LoginPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Login failed");
+        throw new Error(payload.detail ?? "Не удалось выполнить вход");
       }
       localStorage.setItem("agro_access_token", payload.access_token);
       router.push("/app");
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Unknown error");
+      setError(submitError instanceof Error ? submitError.message : "Неизвестная ошибка");
     } finally {
       setLoading(false);
     }
@@ -42,10 +42,10 @@ export default function LoginPage() {
   return (
     <main>
       <section className="card">
-        <h1>Sign in</h1>
+        <h1>Вход</h1>
         <form onSubmit={handleSubmit}>
           <label>
-            Login
+            Логин
             <input
               name="login"
               type="text"
@@ -56,7 +56,7 @@ export default function LoginPage() {
             />
           </label>
           <label>
-            Password
+            Пароль
             <input
               name="password"
               type="password"
@@ -69,10 +69,10 @@ export default function LoginPage() {
           {error && <p>{error}</p>}
           <div className="actions">
             <button type="submit" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
+              {loading ? "Входим..." : "Войти"}
             </button>
             <Link className="button-link secondary" href="/register">
-              Create account
+              Создать аккаунт
             </Link>
           </div>
         </form>

@@ -20,7 +20,7 @@ export default function RegisterPage() {
     event.preventDefault();
     setError(null);
     if (password !== confirm) {
-      setError("Passwords do not match");
+      setError("Пароли не совпадают");
       return;
     }
     setLoading(true);
@@ -32,12 +32,12 @@ export default function RegisterPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Registration failed");
+        throw new Error(payload.detail ?? "Не удалось зарегистрироваться");
       }
       localStorage.setItem("agro_access_token", payload.access_token);
       router.push("/app");
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Unknown error");
+      setError(submitError instanceof Error ? submitError.message : "Неизвестная ошибка");
     } finally {
       setLoading(false);
     }
@@ -46,10 +46,10 @@ export default function RegisterPage() {
   return (
     <main>
       <section className="card">
-        <h1>Create account</h1>
+        <h1>Регистрация</h1>
         <form onSubmit={handleSubmit}>
           <label>
-            Login
+            Логин
             <input
               name="login"
               type="text"
@@ -60,7 +60,7 @@ export default function RegisterPage() {
             />
           </label>
           <label>
-            Password
+            Пароль
             <input
               name="password"
               type="password"
@@ -71,7 +71,7 @@ export default function RegisterPage() {
             />
           </label>
           <label>
-            Confirm password
+            Подтвердите пароль
             <input
               name="confirm"
               type="password"
@@ -84,10 +84,10 @@ export default function RegisterPage() {
           {error && <p>{error}</p>}
           <div className="actions">
             <button type="submit" disabled={loading}>
-              {loading ? "Creating..." : "Create"}
+              {loading ? "Создаем..." : "Создать"}
             </button>
             <Link className="button-link secondary" href="/login">
-              Back
+              Назад
             </Link>
           </div>
         </form>

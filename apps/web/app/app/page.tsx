@@ -49,14 +49,14 @@ type GeomsState = {
 };
 
 const METRIC_LABELS: Record<string, string> = {
-  length_total_m: "Length total, m",
-  length_transit_m: "Transit, m",
-  length_spray_m: "Spray, m",
-  time_total_min: "Time total, min",
-  fuel_l: "Fuel, l",
-  fert_l: "Mix, l",
-  field_area_ha: "Field area, ha",
-  sprayed_area_ha: "Sprayed, ha",
+  length_total_m: "Общая длина, м",
+  length_transit_m: "Транзит, м",
+  length_spray_m: "Обработка, м",
+  time_total_min: "Общее время, мин",
+  fuel_l: "Топливо, л",
+  fert_l: "Смесь, л",
+  field_area_ha: "Площадь поля, га",
+  sprayed_area_ha: "Покрыто, га",
 };
 
 export default function AppPage() {
@@ -106,7 +106,7 @@ export default function AppPage() {
   const loadMissions = useCallback(async (authToken: string) => {
     const response = await fetch(`${apiBaseUrl}/missions`, { headers: { Authorization: `Bearer ${authToken}` } });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail ?? "Failed to fetch missions");
+    if (!response.ok) throw new Error(payload.detail ?? "Не удалось загрузить миссии");
     setMissions(payload as MissionListItem[]);
   }, [apiBaseUrl]);
 
@@ -119,11 +119,11 @@ export default function AppPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "Failed to fetch mission");
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось загрузить миссию");
       setSelectedMission(payload as MissionDetail);
       setSelectedTripIndex(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unknown error");
+      setError(loadError instanceof Error ? loadError.message : "Неизвестная ошибка");
     } finally {
       setLoading(false);
     }
@@ -132,7 +132,7 @@ export default function AppPage() {
   useEffect(() => {
     if (!token) return;
     void loadMissions(token).catch((loadError: unknown) => {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load missions");
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить миссии");
     });
   }, [token, loadMissions]);
 
@@ -167,12 +167,12 @@ export default function AppPage() {
     if (!token) return;
     if (!geoms.field || !geoms.runway_centerline) {
       const missing = [
-        !geoms.field ? "field polygon" : null,
-        !geoms.runway_centerline ? "runway line" : null,
+        !geoms.field ? "полигон поля" : null,
+        !geoms.runway_centerline ? "линия ВПП" : null,
       ]
         .filter(Boolean)
-        .join(" and ");
-      setError(`Missing required geometry: ${missing}`);
+        .join(" и ");
+      setError(`Не заданы обязательные геометрии: ${missing}`);
       return;
     }
 
@@ -188,11 +188,11 @@ export default function AppPage() {
         body: JSON.stringify({ geoms, aircraft }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "Mission build failed");
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось построить миссию");
       await loadMissions(token);
       await loadMissionById((payload as MissionDetail).id);
     } catch (buildError) {
-      setError(buildError instanceof Error ? buildError.message : "Unknown error");
+      setError(buildError instanceof Error ? buildError.message : "Неизвестная ошибка");
     } finally {
       setLoading(false);
     }
@@ -244,17 +244,17 @@ export default function AppPage() {
         type="button"
         className={`drawer-toggle left ${leftDrawerOpen ? "active" : ""}`}
         onClick={toggleLeftDrawer}
-        aria-label={leftDrawerOpen ? "Close parameters panel" : "Open parameters panel"}
+        aria-label={leftDrawerOpen ? "Закрыть панель параметров" : "Открыть панель параметров"}
       >
-        ☰ Parameters
+        ☰ Параметры
       </button>
       <button
         type="button"
         className={`drawer-toggle right ${rightDrawerOpen ? "active" : ""}`}
         onClick={toggleRightDrawer}
-        aria-label={rightDrawerOpen ? "Close missions panel" : "Open missions panel"}
+        aria-label={rightDrawerOpen ? "Закрыть панель миссий" : "Открыть панель миссий"}
       >
-        Missions ☰
+        Миссии ☰
       </button>
 
       {hasDrawerOpen && (
@@ -265,52 +265,52 @@ export default function AppPage() {
             setLeftDrawerOpen(false);
             setRightDrawerOpen(false);
           }}
-          aria-label="Close side panels"
+          aria-label="Закрыть боковые панели"
         />
       )}
 
       <section className={`workspace-panel drawer-panel left-panel ${leftDrawerOpen ? "open" : ""}`}>
         <div className="drawer-header">
-          <h2>Aircraft & Route Params</h2>
+          <h2>Параметры самолета и маршрута</h2>
           <button
             type="button"
             className="drawer-close"
             onClick={() => setLeftDrawerOpen(false)}
-            aria-label="Close parameters panel"
+            aria-label="Закрыть панель параметров"
           >
             X
           </button>
         </div>
         <label>
-          Spray width, m
+          Ширина захвата, м
           <input min={1} max={200} step={1} type="number" value={aircraft.spray_width_m} onChange={(e) => setAircraft({ ...aircraft, spray_width_m: Number(e.target.value) })} />
         </label>
         <label>
-          Turn radius, m
+          Радиус разворота, м
           <input min={1} max={500} step={1} type="number" value={aircraft.turn_radius_m} onChange={(e) => setAircraft({ ...aircraft, turn_radius_m: Number(e.target.value) })} />
         </label>
         <label>
-          Total capacity, l
+          Общая емкость бака, л
           <input min={1} max={10000} step={1} type="number" value={aircraft.total_capacity_l} onChange={(e) => setAircraft({ ...aircraft, total_capacity_l: Number(e.target.value) })} />
         </label>
         <label>
-          Fuel reserve, l
+          Резерв топлива, л
           <input min={0} max={500} step={0.5} type="number" value={aircraft.fuel_reserve_l} onChange={(e) => setAircraft({ ...aircraft, fuel_reserve_l: Number(e.target.value) })} />
         </label>
         <label>
-          Mix rate, l/ha
+          Расход смеси, л/га
           <input min={0} max={200} type="number" step={0.5} value={aircraft.mix_rate_l_per_ha} onChange={(e) => setAircraft({ ...aircraft, mix_rate_l_per_ha: Number(e.target.value) })} />
         </label>
         <label>
-          Fuel burn, l/km
+          Расход топлива, л/км
           <input min={0} max={10} type="number" step={0.01} value={aircraft.fuel_burn_l_per_km} onChange={(e) => setAircraft({ ...aircraft, fuel_burn_l_per_km: Number(e.target.value) })} />
         </label>
         <label>
-          Headland factor (x width)
+          Кромка (x ширины захвата)
           <input min={0} max={8} step={0.5} type="number" value={aircraft.headland_factor} onChange={(e) => setAircraft({ ...aircraft, headland_factor: Number(e.target.value) })} />
         </label>
         <label>
-          Route order
+          Порядок обхода
           <select
             value={aircraft.route_order}
             onChange={(e) =>
@@ -320,14 +320,14 @@ export default function AppPage() {
               })
             }
           >
-            <option value="snake">snake</option>
-            <option value="boustro">boustro</option>
-            <option value="spiral">spiral</option>
-            <option value="straight_loops">straight_loops</option>
+            <option value="snake">Змейка</option>
+            <option value="boustro">Бустрофедон</option>
+            <option value="spiral">Спираль</option>
+            <option value="straight_loops">Прямые петли</option>
           </select>
         </label>
         <label>
-          Objective
+          Цель генератора
           <select
             value={aircraft.objective}
             onChange={(e) =>
@@ -337,10 +337,10 @@ export default function AppPage() {
               })
             }
           >
-            <option value="n_swath">n_swath</option>
-            <option value="swath_length">swath_length</option>
-            <option value="field_coverage">field_coverage</option>
-            <option value="overlap">overlap</option>
+            <option value="n_swath">Количество сватов</option>
+            <option value="swath_length">Длина сватов</option>
+            <option value="field_coverage">Покрытие поля</option>
+            <option value="overlap">Перекрытие</option>
           </select>
         </label>
         <label className="checkbox-row">
@@ -354,37 +354,40 @@ export default function AppPage() {
               })
             }
           />
-          Use continuous curvature
+          Использовать непрерывную кривизну
         </label>
 
-        <h3>Geometry Editor</h3>
-        <p>Use map draw tools: polygon for {drawTarget === "nfz" ? "NFZ" : "Field"}, polyline for Runway.</p>
+        <h3>Редактор геометрии</h3>
+        <p>
+          Используйте инструменты рисования: полигон для {drawTarget === "nfz" ? "NFZ" : "поля"},
+          полилиния для ВПП.
+        </p>
         <div className="mode-row">
-          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Polygon to Field</button>
-          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Polygon to NFZ</button>
+          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Полигон в Поле</button>
+          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Полигон в NFZ</button>
         </div>
-        <h3>Map Layers</h3>
+        <h3>Слои карты</h3>
         <label>
-          Map style
+          Стиль карты
           <select value={mapStyle} onChange={(e) => setMapStyle(e.target.value as "scheme" | "satellite" | "hybrid")}>
-            <option value="scheme">Scheme</option>
-            <option value="satellite">Satellite</option>
-            <option value="hybrid">Hybrid</option>
+            <option value="scheme">Схема</option>
+            <option value="satellite">Спутник</option>
+            <option value="hybrid">Гибрид</option>
           </select>
         </label>
         <label>
-          Route coloring
+          Окраска маршрута
           <select
             value={routePaletteMode}
             onChange={(e) => setRoutePaletteMode(e.target.value as "full_gradient" | "trips_darkness")}
           >
-            <option value="full_gradient">All trips: green to dark</option>
-            <option value="trips_darkness">Trips by order: light to dark</option>
+            <option value="full_gradient">Все рейсы: от зеленого к темному</option>
+            <option value="trips_darkness">Рейсы по порядку: от светлого к темному</option>
           </select>
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.field} onChange={(e) => setLayerVisibility({ ...layerVisibility, field: e.target.checked })} />
-          Field
+          Поле
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.nfz} onChange={(e) => setLayerVisibility({ ...layerVisibility, nfz: e.target.checked })} />
@@ -392,40 +395,40 @@ export default function AppPage() {
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.swaths} onChange={(e) => setLayerVisibility({ ...layerVisibility, swaths: e.target.checked })} />
-          Swaths
+          Сваты
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.transit} onChange={(e) => setLayerVisibility({ ...layerVisibility, transit: e.target.checked })} />
-          Work path (route)
+          Рабочий маршрут
         </label>
         <label className="checkbox-row">
           <input type="checkbox" checked={layerVisibility.trips} onChange={(e) => setLayerVisibility({ ...layerVisibility, trips: e.target.checked })} />
-          Trip transits (to/from runway)
+          Долеты/возвраты рейсов
         </label>
-        <p className="panel-status">Field: {geoms.field ? "set" : "missing"} | Runway: {geoms.runway_centerline ? "set" : "missing"} | NFZ: {geoms.nfz.length}</p>
+        <p className="panel-status">Поле: {geoms.field ? "задано" : "не задано"} | ВПП: {geoms.runway_centerline ? "задана" : "не задана"} | NFZ: {geoms.nfz.length}</p>
         <div className="mode-row">
-          <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Clear Field</button>
+          <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Очистить поле</button>
         </div>
         <div className="mode-row">
-          <button type="button" className="secondary" onClick={() => clearGeometry("runway")}>Clear Runway</button>
-          <button type="button" className="secondary" onClick={() => clearGeometry("nfz")}>Clear NFZ</button>
+          <button type="button" className="secondary" onClick={() => clearGeometry("runway")}>Очистить ВПП</button>
+          <button type="button" className="secondary" onClick={() => clearGeometry("nfz")}>Очистить NFZ</button>
         </div>
 
         <button type="button" onClick={() => void buildMission()} disabled={loading}>
-          {loading ? "Building..." : "Build Mission"}
+          {loading ? "Строим..." : "Построить миссию"}
         </button>
-        <button type="button" className="secondary" onClick={handleLogout}>Logout</button>
+        <button type="button" className="secondary" onClick={handleLogout}>Выйти</button>
         {error && <p className="error-text">{error}</p>}
       </section>
 
       <section className={`workspace-panel drawer-panel right-panel ${rightDrawerOpen ? "open" : ""}`}>
         <div className="drawer-header">
-          <h2>Missions & Stats</h2>
+          <h2>Миссии и статистика</h2>
           <button
             type="button"
             className="drawer-close"
             onClick={() => setRightDrawerOpen(false)}
-            aria-label="Close missions panel"
+            aria-label="Закрыть панель миссий"
           >
             X
           </button>
@@ -445,7 +448,7 @@ export default function AppPage() {
 
         {Object.keys(metrics).length > 0 && (
           <>
-            <h3>Mission Metrics</h3>
+            <h3>Метрики миссии</h3>
             <div className="metrics-grid">
               {Object.entries(metrics).map(([key, value]) => (
                 <div key={key} className="metric-card">
@@ -459,27 +462,27 @@ export default function AppPage() {
 
         {trips.length > 0 && (
           <>
-            <h3>Trips</h3>
+            <h3>Рейсы</h3>
             <div className="mode-row">
               <button type="button" className={selectedTripIndex === null ? "" : "secondary"} onClick={() => setSelectedTripIndex(null)}>
-                All trips
+                Все рейсы
               </button>
             </div>
             <div className="trip-list">
               {trips.map((trip, index) => (
                 <button key={index} type="button" className={`trip-card ${selectedTripIndex === index ? "active" : ""}`} onClick={() => setSelectedTripIndex(index)}>
-                  <strong>Trip {index + 1}</strong>
-                  <div>Swaths: {String(trip.start_idx)} - {String(trip.end_idx)}</div>
-                  <div>Fuel used: {Number(trip.fuel_used_l ?? 0).toFixed(2)} l</div>
-                  <div>Mix used: {Number(trip.mix_used_l ?? 0).toFixed(2)} l</div>
+                  <strong>Рейс {index + 1}</strong>
+                  <div>Сваты: {String(trip.start_idx)} - {String(trip.end_idx)}</div>
+                  <div>Топливо: {Number(trip.fuel_used_l ?? 0).toFixed(2)} л</div>
+                  <div>Смесь: {Number(trip.mix_used_l ?? 0).toFixed(2)} л</div>
                 </button>
               ))}
             </div>
-            {selectedTripIndex !== null && <p>Selected trip uses blue gradient.</p>}
+            {selectedTripIndex !== null && <p>Выбранный рейс выделен синим градиентом.</p>}
           </>
         )}
 
-        <h3>Logs</h3>
+        <h3>Логи</h3>
         <pre>{logs.join("\n") || "-"}</pre>
       </section>
     </main>

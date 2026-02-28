@@ -371,11 +371,11 @@ export default function MapEditor({
         <FitToLayers geoms={geoms} routeGeo={routeGeo} />
       </MapContainer>
       <div className="map-legend">
-        <div><span className="legend-dot field" />Field</div>
-        <div><span className="legend-dot runway" />Runway</div>
+        <div><span className="legend-dot field" />Поле</div>
+        <div><span className="legend-dot runway" />ВПП</div>
         <div><span className="legend-dot nfz" />NFZ</div>
-        <div><span className="legend-dot swath" />Swaths</div>
-        <div><span className="legend-dot route" />Work path / Trip transit</div>
+        <div><span className="legend-dot swath" />Сваты</div>
+        <div><span className="legend-dot route" />Маршрут / Долеты рейсов</div>
       </div>
     </div>
   );

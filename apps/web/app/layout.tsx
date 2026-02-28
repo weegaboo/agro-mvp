@@ -4,12 +4,12 @@ import type { ReactNode } from 'react';
 
 export const metadata: Metadata = {
   title: 'Agro Web',
-  description: 'Agro planning web platform',
+  description: 'Веб-платформа для агропланирования',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="ru">
       <body>{children}</body>
     </html>
   );
