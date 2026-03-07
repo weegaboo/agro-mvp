@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from io import BytesIO
+from zipfile import ZipFile
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,7 +17,66 @@ class _OkPlanner:
     def build_route_from_project(self, project_path: str, log_fn=None):  # noqa: ANN001
         if log_fn:
             log_fn("planner ok")
-        return {"metrics": {"length_total_m": 10.0}}
+        return {
+            "geo": {
+                "to_field": {
+                    "type": "LineString",
+                    "coordinates": [[37.59, 55.7], [37.6, 55.7]],
+                },
+                "back_home": {
+                    "type": "LineString",
+                    "coordinates": [[37.604, 55.71], [37.59, 55.7]],
+                },
+                "cover_path": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [37.6, 55.7],
+                        [37.6, 55.71],
+                        [37.602, 55.71],
+                        [37.602, 55.7],
+                        [37.604, 55.7],
+                        [37.604, 55.71],
+                    ],
+                },
+                "swaths": [
+                    {
+                        "type": "LineString",
+                        "coordinates": [[37.6, 55.7], [37.6, 55.71]],
+                    },
+                    {
+                        "type": "LineString",
+                        "coordinates": [[37.602, 55.71], [37.602, 55.7]],
+                    },
+                ],
+                "trips": [
+                    {
+                        "start_idx": 0,
+                        "end_idx": 0,
+                        "to_field": {
+                            "type": "LineString",
+                            "coordinates": [[37.59, 55.7], [37.6, 55.7]],
+                        },
+                        "back_home": {
+                            "type": "LineString",
+                            "coordinates": [[37.6, 55.71], [37.59, 55.7]],
+                        },
+                    },
+                    {
+                        "start_idx": 1,
+                        "end_idx": 1,
+                        "to_field": {
+                            "type": "LineString",
+                            "coordinates": [[37.59, 55.7], [37.602, 55.71]],
+                        },
+                        "back_home": {
+                            "type": "LineString",
+                            "coordinates": [[37.602, 55.7], [37.59, 55.7]],
+                        },
+                    },
+                ],
+            },
+            "metrics": {"length_total_m": 10.0},
+        }
 
 
 def _test_db_session() -> Session:
@@ -163,6 +225,56 @@ def test_create_mission_from_geo() -> None:
         body = response.json()
         assert body["status"] == "success"
         assert body["result_json"]["route"]["metrics"]["length_total_m"] == 10.0
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_download_waypoints_zip() -> None:
+    db = _test_db_session()
+
+    def override_get_db():  # noqa: ANN202
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_planner_service] = lambda: _OkPlanner()
+    client = TestClient(app)
+
+    try:
+        auth = client.post("/auth/register", json={"login": "user4", "password": "secret12"})
+        assert auth.status_code == 200
+        token = auth.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        payload = {
+            "geoms": {
+                "field": {"type": "Polygon", "coordinates": [[[37.6, 55.7], [37.61, 55.7], [37.61, 55.71], [37.6, 55.71], [37.6, 55.7]]]},
+                "runway_centerline": {"type": "LineString", "coordinates": [[37.59, 55.7], [37.595, 55.705]]},
+                "nfz": [],
+            },
+            "aircraft": {"spray_width_m": 20},
+        }
+        create_response = client.post("/missions/from-geo", json=payload, headers=headers)
+        assert create_response.status_code == 200
+        mission_id = create_response.json()["id"]
+
+        export_response = client.get(f"/missions/{mission_id}/waypoints.zip", headers=headers)
+        assert export_response.status_code == 200
+        assert export_response.headers["content-type"] == "application/zip"
+        assert "attachment;" in export_response.headers["content-disposition"]
+
+        with ZipFile(BytesIO(export_response.content)) as archive:
+            names = sorted(archive.namelist())
+            assert names == [
+                f"mission_{mission_id}_waypoints/trip_001.waypoints",
+                f"mission_{mission_id}_waypoints/trip_002.waypoints",
+            ]
+            for filename in names:
+                content = archive.read(filename).decode("utf-8")
+                assert content.startswith("QGC WPL 110\n")
     finally:
         app.dependency_overrides.clear()
         db.close()

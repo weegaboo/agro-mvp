@@ -91,6 +91,7 @@ export default function AppPage() {
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [downloadingWaypoints, setDownloadingWaypoints] = useState(false);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 
@@ -203,9 +204,42 @@ export default function AppPage() {
     router.push("/login");
   };
 
+  const downloadWaypointsZip = async () => {
+    if (!token || !selectedMission) return;
+    setError(null);
+    setDownloadingWaypoints(true);
+    try {
+      const response = await fetch(`${apiBaseUrl}/missions/${selectedMission.id}/waypoints.zip`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(
+          typeof payload?.detail === "string" ? payload.detail : "Не удалось скачать .waypoints архив",
+        );
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const fallbackName = `mission_${selectedMission.id}_waypoints.zip`;
+      const contentDisposition = response.headers.get("content-disposition");
+      const filenameMatch = contentDisposition?.match(/filename=\"?([^"]+)\"?/i);
+      link.href = objectUrl;
+      link.download = filenameMatch?.[1] ?? fallbackName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Неизвестная ошибка");
+    } finally {
+      setDownloadingWaypoints(false);
+    }
+  };
+
   const routeGeo = selectedMission?.result_json?.route?.geo;
   const metrics = selectedMission?.result_json?.route?.metrics ?? {};
-  const logs = selectedMission?.result_json?.logs ?? [];
   const trips = (routeGeo?.trips as Array<Record<string, unknown>> | undefined) ?? [];
   const hasDrawerOpen = leftDrawerOpen || rightDrawerOpen;
 
@@ -445,6 +479,11 @@ export default function AppPage() {
             </button>
           ))}
         </div>
+        {selectedMission?.status === "success" && (
+          <button type="button" onClick={() => void downloadWaypointsZip()} disabled={downloadingWaypoints}>
+            {downloadingWaypoints ? "Готовим архив..." : "Скачать .waypoints (zip)"}
+          </button>
+        )}
 
         {Object.keys(metrics).length > 0 && (
           <>
@@ -481,9 +520,6 @@ export default function AppPage() {
             {selectedTripIndex !== null && <p>Выбранный рейс выделен синим градиентом.</p>}
           </>
         )}
-
-        <h3>Логи</h3>
-        <pre>{logs.join("\n") || "-"}</pre>
       </section>
     </main>
   );

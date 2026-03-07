@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 import json
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from .schemas import (
 )
 from .services.auth import authenticate_user, create_access_token, create_user, get_user_by_login
 from .services.missions import create_mission, get_mission_by_id, list_missions, mark_mission_failed, mark_mission_success
+from .services.waypoints import build_waypoints_zip
 
 app = FastAPI(title="Agro API", version="0.1.0")
 app.add_middleware(
@@ -245,4 +246,36 @@ def get_mission(
         input_json=mission.input_json,
         result_json=mission.result_json,
         created_at=mission.created_at,
+    )
+
+
+@app.get("/missions/{mission_id}/waypoints.zip")
+def download_mission_waypoints(
+    mission_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Download mission routes as ZIP with one `.waypoints` per trip."""
+    mission = get_mission_by_id(db, mission_id, user_id=current_user.id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if not isinstance(mission.result_json, dict):
+        raise HTTPException(status_code=400, detail="Mission has no result payload")
+
+    route = mission.result_json.get("route")
+    if not isinstance(route, dict):
+        raise HTTPException(status_code=400, detail="Mission has no route payload")
+    route_geo = route.get("geo")
+    if not isinstance(route_geo, dict):
+        raise HTTPException(status_code=400, detail="Mission has no route geo payload")
+
+    try:
+        archive_name, archive_content = build_waypoints_zip(mission_id=mission.id, route_geo=route_geo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return Response(
+        content=archive_content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{archive_name}"'},
     )
