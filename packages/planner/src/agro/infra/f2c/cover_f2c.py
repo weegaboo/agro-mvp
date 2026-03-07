@@ -5,14 +5,15 @@ from __future__ import annotations
 import math
 import json
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Iterable, Tuple, List, Dict, Any
+from typing import List, Literal, Optional, Iterable, Tuple, Dict, Any
 
 from shapely.geometry import Polygon, LineString, Point, shape as shp_shape
 
 import fields2cover as f2c  # v2.0.0
 from ompl import base as ob
 from ompl import geometric as og
-from agro.domain.routing.swaths_path import build_swath_route_min_hops
+
+from agro.domain.routing.fillet import fillet_with_end_headings
 
 
 # ============================================================
@@ -82,41 +83,288 @@ def _swath_to_shapely(swath_obj) -> LineString:
     return _to_shapely_linestring(swath_obj)
 
 
-def get_best_variant_by_runway(
-    runway_m: LineString,
-    swaths: "f2c.Swaths",
-    sorter,
-):
-    """Pick swath ordering variant closest to runway end."""
-    if runway_m.geom_type != "LineString":
-        runway_m = LineString(runway_m)  # на случай, если пришёл массив координат
-    runway_end = Point(runway_m.coords[-1])
-    best_distance, best_variant = None, 0
-    for variant in (0, 1):
-        sw_sorted = sorter.genSortedSwaths(swaths, variant)
-        first_sw = sw_sorted.at(0)
-        line = shp_shape(
-            {
-                "type": "LineString",
-                "coordinates": [
-                    [first_sw.startPoint().X(), first_sw.startPoint().Y()],
-                    [first_sw.endPoint().X(), first_sw.endPoint().Y()]
-                ]
-            }
-        )
-        first_ls = LineString([(float(x), float(y)) for (x, y, *_) in line.coords])
-        # «первая точка маршрута» — старт первой сват-линии
-        route_start = Point(first_ls.coords[0])
-        distance = float(runway_end.distance(route_start))
-        if best_distance is None or distance < best_distance:
-            best_distance = distance
-            best_variant = variant
-    return best_variant
-
-
 # ============================================================
 #     STRAIGHT_LOOPS: порядок сватов + OMPL перелёты
 # ============================================================
+
+@dataclass(frozen=True)
+class OrientedRouteSwath:
+    """One swath with fixed direction and extended entry/exit control points."""
+
+    swath_id: int
+    start: Tuple[float, float]
+    end: Tuple[float, float]
+    entry_ext: Tuple[float, float]
+    exit_ext: Tuple[float, float]
+
+
+def _dist_xy(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """Euclidean distance between two points."""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _ls_endpoints(ls: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Return first and last coordinates of a linestring as XY tuples."""
+    coords = list(ls.coords)
+    if len(coords) < 2:
+        raise ValueError("Swath must have at least two points")
+    return _xy(coords[0]), _xy(coords[-1])
+
+
+def _build_oriented_swath(
+    *,
+    swath_id: int,
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> OrientedRouteSwath:
+    """Build oriented swath without artificial extension."""
+    return OrientedRouteSwath(
+        swath_id=swath_id,
+        start=start,
+        end=end,
+        entry_ext=start,
+        exit_ext=end,
+    )
+
+
+def _build_oriented_candidates(
+    swaths: List[LineString],
+) -> List[List[OrientedRouteSwath]]:
+    """Build two directed variants for each swath."""
+    by_swath: List[List[OrientedRouteSwath]] = []
+    for swath_id, sw in enumerate(swaths):
+        a, b = _ls_endpoints(sw)
+        by_swath.append(
+            [
+                _build_oriented_swath(swath_id=swath_id, start=a, end=b),
+                _build_oriented_swath(swath_id=swath_id, start=b, end=a),
+            ]
+        )
+    return by_swath
+
+
+def _path_length(path_xy: List[Tuple[float, float]]) -> float:
+    """Return polyline length."""
+    if len(path_xy) < 2:
+        return 0.0
+    return sum(_dist_xy(path_xy[i - 1], path_xy[i]) for i in range(1, len(path_xy)))
+
+
+def _route_bounds_from_candidates(
+    *,
+    candidates_by_swath: List[List[OrientedRouteSwath]],
+    runway_m: LineString,
+    margin_m: float,
+):
+    """Compute global OMPL bounds for all swath transitions."""
+    key_pts: List[Tuple[float, float]] = []
+    key_pts.extend([_xy(p) for p in runway_m.coords])
+    for variants in candidates_by_swath:
+        for cand in variants:
+            key_pts.extend([cand.start, cand.end, cand.entry_ext, cand.exit_ext])
+    return _bounds_xy(key_pts, margin_m)
+
+
+def _plan_transition_between(
+    *,
+    current: OrientedRouteSwath,
+    nxt: OrientedRouteSwath,
+    Rmin: float,
+    bnds,
+    entry_window_m: float,
+    stabilize_len_m: float,
+) -> Optional[List[Tuple[float, float]]]:
+    """Plan transition with entry corridor candidates and retry strategy."""
+    yaw_out = _heading(current.start, current.end)
+    yaw_in = _heading(nxt.start, nxt.end)
+
+    start_pose = (current.exit_ext[0], current.exit_ext[1], yaw_out)
+    lead_vec = (nxt.start[0] - nxt.entry_ext[0], nxt.start[1] - nxt.entry_ext[1])
+    lead_len = math.hypot(lead_vec[0], lead_vec[1])
+    if lead_len <= 1e-9:
+        goal_pts = [nxt.entry_ext]
+    else:
+        ux = lead_vec[0] / lead_len
+        uy = lead_vec[1] / lead_len
+        max_offset = min(lead_len, entry_window_m)
+        max_offset = min(max_offset, max(0.0, lead_len - stabilize_len_m))
+        base_offsets = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        goal_pts = []
+        for k in base_offsets:
+            off = k * max_offset
+            gp = (nxt.entry_ext[0] + ux * off, nxt.entry_ext[1] + uy * off)
+            if not goal_pts or _dist_xy(goal_pts[-1], gp) > 1e-3:
+                goal_pts.append(gp)
+        if not goal_pts:
+            goal_pts = [nxt.entry_ext]
+
+    best_path: Optional[List[Tuple[float, float]]] = None
+    best_cost = float("inf")
+
+    def _smooth_path(path_xy: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """Apply light fillet smoothing to reduce corner harshness near joins."""
+        if len(path_xy) < 3:
+            return path_xy
+        smoothed = fillet_with_end_headings(
+            line=LineString(path_xy),
+            radius_m=max(0.6 * Rmin, 1.0),
+            step_m=max(0.15 * Rmin, 1.0),
+            start_heading=yaw_out,
+            end_heading=yaw_in,
+        )
+        if smoothed.is_empty or len(smoothed.coords) < 2:
+            return path_xy
+        return [(_xy(p)) for p in smoothed.coords]
+
+    def _plan_one_goal(goal_pt: Tuple[float, float], *, fast: bool) -> Optional[List[Tuple[float, float]]]:
+        return plan_pose_to_pose(
+            start_xyyaw=start_pose,
+            goal_xyyaw=(goal_pt[0], goal_pt[1], yaw_in),
+            Rmin=Rmin,
+            bnds=bnds,
+            time_limit=0.9 if fast else 2.0,
+            range_hint=(3.0 if fast else 6.0) * Rmin,
+            simplify_time=0.8 if fast else 1.2,
+            interp_n=700 if fast else 1200,
+        )
+
+    for goal_pt in goal_pts:
+        path = _plan_one_goal(goal_pt, fast=True)
+        if path is None:
+            path = _plan_one_goal(goal_pt, fast=False)
+        if path is None:
+            continue
+        path = _smooth_path(path)
+
+        cost = _path_length(path)
+        stabilize_dist = _dist_xy(goal_pt, nxt.start)
+        if stabilize_dist < stabilize_len_m:
+            cost += (stabilize_len_m - stabilize_dist) ** 2 * 50.0
+        if len(path) >= 2:
+            v = (path[-1][0] - path[-2][0], path[-1][1] - path[-2][1])
+            yaw_last = math.atan2(v[1], v[0]) if math.hypot(v[0], v[1]) > 1e-9 else yaw_in
+            dyaw = abs((yaw_last - yaw_in + math.pi) % (2.0 * math.pi) - math.pi)
+            cost += dyaw * 10.0
+
+        if cost < best_cost:
+            best_cost = cost
+            best_path = path
+
+    return best_path
+
+
+def _select_start_swath(
+    *,
+    candidates_by_swath: List[List[OrientedRouteSwath]],
+    runway_m: LineString,
+) -> OrientedRouteSwath:
+    """Pick start swath closest to runway end."""
+    runway_end = _xy(runway_m.coords[-1])
+    best: Optional[OrientedRouteSwath] = None
+    best_dist = float("inf")
+    for variants in candidates_by_swath:
+        for cand in variants:
+            d = _dist_xy(runway_end, cand.start)
+            if d < best_dist:
+                best_dist = d
+                best = cand
+    if best is None:
+        raise RuntimeError("Не удалось выбрать стартовый сват")
+    return best
+
+
+def _build_route_with_ompl(
+    *,
+    swath_lines_raw: List[LineString],
+    runway_m: LineString,
+    Rmin: float,
+    top_k: int = 6,
+) -> Tuple[List[OrientedRouteSwath], List[List[Tuple[float, float]]]]:
+    """Build swath order by OMPL transition cost with radius-aware preference."""
+    candidates_by_swath = _build_oriented_candidates(swath_lines_raw)
+    margin_m = max(8.0 * Rmin, 20.0)
+    bnds = _route_bounds_from_candidates(
+        candidates_by_swath=candidates_by_swath,
+        runway_m=runway_m,
+        margin_m=margin_m,
+    )
+    entry_window_m = 4.0 * Rmin
+    stabilize_len_m = 1.5 * Rmin
+
+    gap_pref = max(Rmin, 1.0)
+    route: List[OrientedRouteSwath] = []
+    transitions: List[List[Tuple[float, float]]] = []
+    visited_swath_ids: set[int] = set()
+
+    current = _select_start_swath(candidates_by_swath=candidates_by_swath, runway_m=runway_m)
+    route.append(current)
+    visited_swath_ids.add(current.swath_id)
+
+    while len(visited_swath_ids) < len(swath_lines_raw):
+        raw_candidates: List[Tuple[OrientedRouteSwath, float]] = []
+        for variants in candidates_by_swath:
+            for cand in variants:
+                if cand.swath_id in visited_swath_ids:
+                    continue
+                gap = _dist_xy(current.end, cand.start)
+                raw_candidates.append((cand, gap))
+
+        if not raw_candidates:
+            break
+
+        preferred = [item for item in raw_candidates if item[1] >= gap_pref]
+        non_preferred = [item for item in raw_candidates if item[1] < gap_pref]
+        preferred.sort(key=lambda item: _dist_xy(current.exit_ext, item[0].entry_ext))
+        non_preferred.sort(key=lambda item: _dist_xy(current.exit_ext, item[0].entry_ext))
+
+        best_cand: Optional[OrientedRouteSwath] = None
+        best_path: Optional[List[Tuple[float, float]]] = None
+        best_cost = float("inf")
+
+        def _try_candidates(candidates: List[Tuple[OrientedRouteSwath, float]]) -> None:
+            nonlocal best_cand, best_path, best_cost
+            for cand, gap in candidates:
+                path = _plan_transition_between(
+                    current=current,
+                    nxt=cand,
+                    Rmin=Rmin,
+                    bnds=bnds,
+                    entry_window_m=entry_window_m,
+                    stabilize_len_m=stabilize_len_m,
+                )
+                if path is None:
+                    continue
+                penalty = max(0.0, gap_pref - gap) * 5.0
+                cost = _path_length(path) + penalty
+                if cost < best_cost:
+                    best_cost = cost
+                    best_cand = cand
+                    best_path = path
+
+        if preferred:
+            _try_candidates(preferred[: max(1, min(top_k, len(preferred)))])
+            if best_cand is None:
+                _try_candidates(preferred)
+        if best_cand is None:
+            _try_candidates(non_preferred[: max(1, min(top_k, len(non_preferred)))])
+            if best_cand is None:
+                _try_candidates(non_preferred)
+        if best_cand is None and preferred:
+            # Last resort: allow all candidates in case top-k pruning missed feasible path.
+            _try_candidates(preferred + non_preferred)
+
+        if best_cand is None or best_path is None:
+            raise RuntimeError(
+                f"OMPL не смог подобрать следующий сват после swath_id={current.swath_id}"
+            )
+
+        transitions.append(best_path)
+        route.append(best_cand)
+        visited_swath_ids.add(best_cand.swath_id)
+        current = best_cand
+
+    return route, transitions
+
 
 def _heading(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     """Return heading (radians) from a to b."""
@@ -275,39 +523,47 @@ def _reverse_linestring(ls: LineString) -> LineString:
 
 def _build_cover_path_from_route_and_transitions(
     swath_lines_by_id: List[LineString],
-    route: List[Dict[str, Any]],
+    route: List[OrientedRouteSwath],
     transitions: List[List[Tuple[float, float]]],
 ) -> tuple[List[LineString], LineString]:
-    """Assemble ordered swaths and a single cover path from transitions."""
+    """Assemble ordered swaths and a single cover path from transitions.
+
+    Uses swath endpoints directly (no artificial swath extension).
+    """
     ordered_swaths: List[LineString] = []
     coords_all: List[Tuple[float, float]] = []
 
     for i, seg in enumerate(route):
-        sid = int(seg["swath_id"])
+        sid = int(seg.swath_id)
         sw = swath_lines_by_id[sid]
 
         # Направление: если реальные концы не совпадают — подгоним реверсом.
-        # (route["start"/"end"] задаются тем алгоритмом порядка)
-        if _xy(sw.coords[0]) != tuple(seg["start"]) or _xy(sw.coords[-1]) != tuple(seg["end"]):
+        if _xy(sw.coords[0]) != tuple(seg.start) or _xy(sw.coords[-1]) != tuple(seg.end):
             sw2 = _reverse_linestring(sw)
         else:
             sw2 = sw
 
         ordered_swaths.append(sw2)
 
-        # добавляем сват
         sw_coords = [(_xy(p)) for p in sw2.coords]
         if not coords_all:
             coords_all.extend(sw_coords)
         else:
-            # если предыдущая точка совпадает — не дублируем
-            if coords_all[-1] == sw_coords[0]:
+            # после transition маршрут приходит в entry_ext,
+            # затем добавляем прямой заход entry_ext -> start свата.
+            if coords_all[-1] != seg.entry_ext:
+                coords_all.append(seg.entry_ext)
+            if coords_all[-1] != seg.start:
+                coords_all.append(seg.start)
+            if sw_coords and coords_all[-1] == sw_coords[0]:
                 coords_all.extend(sw_coords[1:])
             else:
                 coords_all.extend(sw_coords)
 
-        # добавляем переход после свата
+        # после свата добавляем lead-out к exit_ext и затем OMPL transition
         if i < len(transitions):
+            if coords_all[-1] != seg.exit_ext:
+                coords_all.append(seg.exit_ext)
             tr = transitions[i]
             if tr:
                 if coords_all[-1] == tr[0]:
@@ -343,7 +599,6 @@ def build_cover(
     *,
     headland_factor: float = 3.0,
     objective: Literal["swath_length", "n_swath", "field_coverage", "overlap"] = "swath_length",
-    route_order: Literal["snake", "boustro", "spiral", "straight_loops"] = "snake",
     use_continuous_curvature: bool = True,
     min_turn_radius_m: Optional[float] = None,
 ) -> CoverResult:
@@ -355,8 +610,7 @@ def build_cover(
         spray_width_m: Spray width in meters.
         headland_factor: Headland width in robot widths.
         objective: Optimization objective.
-        route_order: Swath traversal order.
-        use_continuous_curvature: Use continuous curvature planning.
+        use_continuous_curvature: Kept for compatibility, ignored in OMPL-only mode.
         min_turn_radius_m: Minimum turning radius in meters.
 
     Returns:
@@ -401,81 +655,30 @@ def build_cover(
         obj = f2c.OBJ_NSwath()
     swaths = bf.generateBestSwaths(obj, robot.getCovWidth(), work_cell)
 
-    # 4) Порядок обхода сватов + построение cover_path
-    #    - обычные режимы: как раньше через F2C RP_* + PP_PathPlanning
-    #    - straight_loops: пытаемся наш алгоритм + OMPL, иначе фолбэк на F2C
+    # 4) OMPL-only cover path:
+    #    - F2C используем только для генерации сватов.
+    #    - Порядок выбираем итеративно по стоимости OMPL перехода.
+    #    - Кандидаты с gap >= Rmin имеют приоритет.
+    #    - Переходы планируются строго между концом текущего и началом следующего свата.
+    swath_lines_raw = [_swath_to_shapely(sw) for sw in _iter_swaths(swaths)]
+    swath_lines_raw = [ls for ls in swath_lines_raw if (ls is not None and not ls.is_empty and len(ls.coords) >= 2)]
+    if not swath_lines_raw:
+        raise RuntimeError("F2C не вернул валидных сватов")
 
-    if route_order == "straight_loops":
-        # Сначала конвертируем сваты F2C в shapely (в "нативном" порядке, без сортера)
-        swath_lines_raw = [_swath_to_shapely(sw) for sw in _iter_swaths(swaths)]
-        # Иногда F2C может дать пустые/дегеративные сваты — подчистим
-        swath_lines_raw = [ls for ls in swath_lines_raw if (ls is not None and not ls.is_empty and len(ls.coords) >= 2)]
-        # --- 1) строим маршрут по сватам (порядок + направление)
-        # ВАЖНО: ты просил min_turn_radius_m+10 для построения порядка
-        route = build_swath_route_min_hops(
-            min_turn_radius_m=float(min_turn_radius_m) + 10.0,
-            swaths_linestring=swath_lines_raw,
-            dist_factor=2.0,
-            require_same_side_entry=True,
-        )
-        # --- 2) строим OMPL-перелёты между сватами
-        res = ompl_transitions_for_swath_route(
-            route=route,
-            Rmin=float(min_turn_radius_m),
-            time_limit=0.9,
-            margin_factor=6.0,
-            range_factor=3.0,
-            interp_n=700,
-        )
-        # --- 3) собираем единый cover_path из сватов + перелётов
-        ordered_swaths, cover_ls = _build_cover_path_from_route_and_transitions(
-            swath_lines_by_id=swath_lines_raw,
-            route=route,
-            transitions=res["transitions"],
-        )
-        swath_lines = ordered_swaths
-        # entry/exit
-        coords = list(cover_ls.coords)
-        x_e, y_e = _xy(coords[0])
-        x_l, y_l = _xy(coords[-1])
-        entry = Point(x_e, y_e)
-        exit_ = Point(x_l, y_l)
-        # оценка угла по первому свату
-        angle_deg = 0.0
-        if swath_lines and len(swath_lines[0].coords) >= 2:
-            x0, y0 = _xy(swath_lines[0].coords[0])
-            x1, y1 = _xy(swath_lines[0].coords[1])
-            angle_deg = (math.degrees(math.atan2(y1 - y0, x1 - x0)) + 360.0) % 360.0
+    rmin = float(min_turn_radius_m) if min_turn_radius_m is not None else max(1.0, float(spray_width_m))
+    route, transitions = _build_route_with_ompl(
+        swath_lines_raw=swath_lines_raw,
+        runway_m=runway_m,
+        Rmin=rmin,
+        top_k=6,
+    )
 
-        return CoverResult(
-            swaths=swath_lines,
-            cover_path=cover_ls,
-            entry_pt=entry,
-            exit_pt=exit_,
-            angle_used_deg=angle_deg,
-        )
-
-    # ---- Обычная F2C-ветка (как было) ----
-    if route_order == "boustro":
-        sorter = f2c.RP_Boustrophedon()
-    elif route_order == "spiral":
-        sorter = f2c.RP_Spiral(48)
-    elif route_order == "snake":
-        sorter = f2c.RP_Snake()
-    else:
-        sorter = f2c.RP_Snake()
-
-    variant = get_best_variant_by_runway(runway_m, swaths, sorter)
-    sorted_swaths = sorter.genSortedSwaths(swaths, variant=variant)
-
-    # 5) Плавный путь (Dubins / DubinsCC)
-    planner = f2c.PP_PathPlanning()
-    turn_model = f2c.PP_DubinsCurvesCC() if use_continuous_curvature and hasattr(f2c, "PP_DubinsCurvesCC") else f2c.PP_DubinsCurves()
-    path = planner.planPath(robot, sorted_swaths, turn_model)
-
-    # 6) В shapely (2D)
-    cover_ls = _to_shapely_linestring(path.toLineString())
-    swath_lines = [ _swath_to_shapely(sw) for sw in _iter_swaths(sorted_swaths) ]
+    ordered_swaths, cover_ls = _build_cover_path_from_route_and_transitions(
+        swath_lines_by_id=swath_lines_raw,
+        route=route,
+        transitions=transitions,
+    )
+    swath_lines = ordered_swaths
 
     # entry/exit
     coords = list(cover_ls.coords)

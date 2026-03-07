@@ -111,13 +111,12 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
     turn_r = float(ac.get("turn_radius_m", 40.0))
     headland_factor = float(ac.get("headland_factor", 3.0))
     objective = ac.get("objective", "n_swath")
-    route_order = ac.get("route_order", "snake")
     use_cc = bool(ac.get("use_cc", True))
 
     _log(
         log_fn,
         f"🌾 F2C покрытие: width={spray_w}м, Rmin={turn_r}м, headland={headland_factor}w, "
-        f"objective={objective}, order={route_order}, CC={use_cc}",
+        f"objective={objective}, OMPL transitions=on, CC={use_cc}",
     )
 
     cover = build_cover(
@@ -126,7 +125,6 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         spray_width_m=spray_w,
         headland_factor=headland_factor,
         objective=objective,
-        route_order=route_order,
         use_continuous_curvature=use_cc,
         min_turn_radius_m=turn_r,
     )

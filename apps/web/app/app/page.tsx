@@ -37,7 +37,6 @@ type AircraftParams = {
   mix_rate_l_per_ha: number;
   fuel_burn_l_per_km: number;
   headland_factor: number;
-  route_order: "snake" | "boustro" | "spiral" | "straight_loops";
   objective: "n_swath" | "swath_length" | "field_coverage" | "overlap";
   use_cc: boolean;
 };
@@ -73,7 +72,6 @@ export default function AppPage() {
     mix_rate_l_per_ha: 10,
     fuel_burn_l_per_km: 0.35,
     headland_factor: 3,
-    route_order: "snake",
     objective: "n_swath",
     use_cc: true,
   });
@@ -347,23 +345,6 @@ export default function AppPage() {
         <label>
           Кромка (x ширины захвата)
           <input min={0} max={8} step={0.5} type="number" value={aircraft.headland_factor} onChange={(e) => setAircraft({ ...aircraft, headland_factor: Number(e.target.value) })} />
-        </label>
-        <label>
-          Порядок обхода
-          <select
-            value={aircraft.route_order}
-            onChange={(e) =>
-              setAircraft({
-                ...aircraft,
-                route_order: e.target.value as "snake" | "boustro" | "spiral" | "straight_loops",
-              })
-            }
-          >
-            <option value="snake">Змейка</option>
-            <option value="boustro">Бустрофедон</option>
-            <option value="spiral">Спираль</option>
-            <option value="straight_loops">Прямые петли</option>
-          </select>
         </label>
         <label>
           Цель генератора
