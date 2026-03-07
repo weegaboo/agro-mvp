@@ -15,6 +15,7 @@ from shapely.ops import unary_union
 
 from agro.domain.geo.crs import context_from_many_geojson, to_utm_geom, to_wgs_geom
 from agro.infra.f2c.cover_f2c import build_cover
+from agro.infra.ompl.aircraft_control import is_control_available
 from agro.domain.routing.transit import build_transit_full
 from agro.domain.metrics.estimates import estimate_mission_from_lengths, EstimateOptions
 from agro.services.trip_splitter import split_into_trips, TripSplitError
@@ -112,11 +113,20 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
     headland_factor = float(ac.get("headland_factor", 3.0))
     objective = ac.get("objective", "n_swath")
     use_cc = bool(ac.get("use_cc", True))
+    transition_mode_raw = str(ac.get("transition_mode", "kinodynamic")).lower()
+    transition_mode = transition_mode_raw if transition_mode_raw in {"geometric", "kinodynamic"} else "kinodynamic"
+    cruise_speed_mps = float(ac.get("cruise_speed_mps", 22.0))
+    max_bank_deg = float(ac.get("max_bank_deg", 35.0))
+    roll_time_constant_s = float(ac.get("roll_time_constant_s", 1.2))
+    transition_fallback = bool(ac.get("transition_fallback", True))
+    kinodynamic_active = transition_mode == "kinodynamic" and is_control_available()
 
     _log(
         log_fn,
         f"🌾 F2C покрытие: width={spray_w}м, Rmin={turn_r}м, headland={headland_factor}w, "
-        f"objective={objective}, OMPL transitions=on, CC={use_cc}",
+        f"objective={objective}, mode={transition_mode}"
+        f"{' (fallback geometric)' if transition_fallback else ''}, "
+        f"kinodynamic_available={kinodynamic_active}, CC={use_cc}",
     )
 
     cover = build_cover(
@@ -127,6 +137,11 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
         objective=objective,
         use_continuous_curvature=use_cc,
         min_turn_radius_m=turn_r,
+        transition_mode=transition_mode,
+        cruise_speed_mps=cruise_speed_mps,
+        max_bank_deg=max_bank_deg,
+        roll_time_constant_s=roll_time_constant_s,
+        fallback_to_geometric=transition_fallback,
     )
     _log(log_fn, f"✅ Покрытие готово: swaths={len(cover.swaths)}, angle≈{cover.angle_used_deg:.1f}°")
 
@@ -234,6 +249,11 @@ def build_route_from_file(project_path: str, *, log_fn: Optional[Callable[[str],
                 "fuel_burn_l_per_km": fuel_l_per_km,
                 "spray_width_m": spray_w,
                 "turn_radius_m": turn_r,
+                "transition_mode": transition_mode,
+                "cruise_speed_mps": cruise_speed_mps,
+                "max_bank_deg": max_bank_deg,
+                "roll_time_constant_s": roll_time_constant_s,
+                "transition_fallback": transition_fallback,
             },
         },
         "metrics": {

@@ -14,6 +14,11 @@ from ompl import base as ob
 from ompl import geometric as og
 
 from agro.domain.routing.fillet import fillet_with_end_headings
+from agro.infra.ompl.aircraft_control import (
+    AircraftControlConfig,
+    is_control_available,
+    plan_pose_to_pose_kinodynamic,
+)
 
 
 # ============================================================
@@ -98,6 +103,17 @@ class OrientedRouteSwath:
     exit_ext: Tuple[float, float]
 
 
+@dataclass(frozen=True)
+class TransitionPlannerConfig:
+    """Planner settings for inter-swath transitions."""
+
+    mode: Literal["geometric", "kinodynamic"] = "kinodynamic"
+    cruise_speed_mps: float = 22.0
+    max_bank_deg: float = 35.0
+    roll_time_constant_s: float = 1.2
+    fallback_to_geometric: bool = True
+
+
 def _dist_xy(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     """Euclidean distance between two points."""
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -173,6 +189,7 @@ def _plan_transition_between(
     bnds,
     entry_window_m: float,
     stabilize_len_m: float,
+    planner_cfg: TransitionPlannerConfig,
 ) -> Optional[List[Tuple[float, float]]]:
     """Plan transition with entry corridor candidates and retry strategy."""
     yaw_out = _heading(current.start, current.end)
@@ -216,8 +233,37 @@ def _plan_transition_between(
             return path_xy
         return [(_xy(p)) for p in smoothed.coords]
 
-    def _plan_one_goal(goal_pt: Tuple[float, float], *, fast: bool) -> Optional[List[Tuple[float, float]]]:
-        return plan_pose_to_pose(
+    def _plan_one_goal(
+        goal_pt: Tuple[float, float],
+        *,
+        fast: bool,
+    ) -> Tuple[Optional[List[Tuple[float, float]]], bool]:
+        if planner_cfg.mode == "kinodynamic" and is_control_available():
+            control_cfg = AircraftControlConfig(
+                cruise_speed_mps=planner_cfg.cruise_speed_mps,
+                max_bank_deg=planner_cfg.max_bank_deg,
+                roll_time_constant_s=planner_cfg.roll_time_constant_s,
+                propagation_step_s=0.12 if fast else 0.15,
+                min_control_steps=1,
+                max_control_steps=8 if fast else 12,
+                goal_tolerance_m=1.6 if fast else 2.2,
+            )
+            kinodynamic_path = plan_pose_to_pose_kinodynamic(
+                start_xyyaw=start_pose,
+                goal_xyyaw=(goal_pt[0], goal_pt[1], yaw_in),
+                Rmin=Rmin,
+                bnds=bnds,
+                config=control_cfg,
+                time_limit=1.2 if fast else 2.6,
+                range_hint=(2.5 if fast else 4.0) * Rmin,
+                interpolate_n=500 if fast else 900,
+            )
+            if kinodynamic_path is not None:
+                return kinodynamic_path, False
+            if not planner_cfg.fallback_to_geometric:
+                return None, False
+
+        geometric_path = plan_pose_to_pose(
             start_xyyaw=start_pose,
             goal_xyyaw=(goal_pt[0], goal_pt[1], yaw_in),
             Rmin=Rmin,
@@ -227,14 +273,16 @@ def _plan_transition_between(
             simplify_time=0.8 if fast else 1.2,
             interp_n=700 if fast else 1200,
         )
+        return geometric_path, geometric_path is not None
 
     for goal_pt in goal_pts:
-        path = _plan_one_goal(goal_pt, fast=True)
+        path, geometric_used = _plan_one_goal(goal_pt, fast=True)
         if path is None:
-            path = _plan_one_goal(goal_pt, fast=False)
+            path, geometric_used = _plan_one_goal(goal_pt, fast=False)
         if path is None:
             continue
-        path = _smooth_path(path)
+        if geometric_used:
+            path = _smooth_path(path)
 
         cost = _path_length(path)
         stabilize_dist = _dist_xy(goal_pt, nxt.start)
@@ -278,6 +326,7 @@ def _build_route_with_ompl(
     swath_lines_raw: List[LineString],
     runway_m: LineString,
     Rmin: float,
+    planner_cfg: TransitionPlannerConfig,
     top_k: int = 6,
 ) -> Tuple[List[OrientedRouteSwath], List[List[Tuple[float, float]]]]:
     """Build swath order by OMPL transition cost with radius-aware preference."""
@@ -331,6 +380,7 @@ def _build_route_with_ompl(
                     bnds=bnds,
                     entry_window_m=entry_window_m,
                     stabilize_len_m=stabilize_len_m,
+                    planner_cfg=planner_cfg,
                 )
                 if path is None:
                     continue
@@ -601,6 +651,11 @@ def build_cover(
     objective: Literal["swath_length", "n_swath", "field_coverage", "overlap"] = "swath_length",
     use_continuous_curvature: bool = True,
     min_turn_radius_m: Optional[float] = None,
+    transition_mode: Literal["geometric", "kinodynamic"] = "kinodynamic",
+    cruise_speed_mps: float = 22.0,
+    max_bank_deg: float = 35.0,
+    roll_time_constant_s: float = 1.2,
+    fallback_to_geometric: bool = True,
 ) -> CoverResult:
     """Build full field coverage using Fields2Cover.
 
@@ -612,6 +667,11 @@ def build_cover(
         objective: Optimization objective.
         use_continuous_curvature: Kept for compatibility, ignored in OMPL-only mode.
         min_turn_radius_m: Minimum turning radius in meters.
+        transition_mode: Transition planner mode between swaths.
+        cruise_speed_mps: Cruise speed for kinodynamic planning.
+        max_bank_deg: Max bank angle for kinodynamic planning.
+        roll_time_constant_s: Turn-rate response time constant.
+        fallback_to_geometric: Fallback to geometric planner if kinodynamic fails.
 
     Returns:
         CoverResult with swaths, cover path, entry/exit points, and angle.
@@ -666,10 +726,19 @@ def build_cover(
         raise RuntimeError("F2C не вернул валидных сватов")
 
     rmin = float(min_turn_radius_m) if min_turn_radius_m is not None else max(1.0, float(spray_width_m))
+    mode = transition_mode if transition_mode in {"geometric", "kinodynamic"} else "kinodynamic"
+    transition_cfg = TransitionPlannerConfig(
+        mode=mode,
+        cruise_speed_mps=float(cruise_speed_mps),
+        max_bank_deg=float(max_bank_deg),
+        roll_time_constant_s=float(roll_time_constant_s),
+        fallback_to_geometric=bool(fallback_to_geometric),
+    )
     route, transitions = _build_route_with_ompl(
         swath_lines_raw=swath_lines_raw,
         runway_m=runway_m,
         Rmin=rmin,
+        planner_cfg=transition_cfg,
         top_k=6,
     )
 
