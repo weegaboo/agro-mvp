@@ -92,6 +92,7 @@ export default function AppPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [downloadingWaypoints, setDownloadingWaypoints] = useState(false);
+  const [waypointsMaxPoints, setWaypointsMaxPoints] = useState(290);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 
@@ -209,9 +210,13 @@ export default function AppPage() {
     setError(null);
     setDownloadingWaypoints(true);
     try {
-      const response = await fetch(`${apiBaseUrl}/missions/${selectedMission.id}/waypoints.zip`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const query = new URLSearchParams({
+        max_points: String(Math.max(50, Math.min(2000, Math.floor(waypointsMaxPoints || 290)))),
       });
+      const response = await fetch(
+        `${apiBaseUrl}/missions/${selectedMission.id}/waypoints.zip?${query.toString()}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(
@@ -480,9 +485,22 @@ export default function AppPage() {
           ))}
         </div>
         {selectedMission?.status === "success" && (
-          <button type="button" onClick={() => void downloadWaypointsZip()} disabled={downloadingWaypoints}>
-            {downloadingWaypoints ? "Готовим архив..." : "Скачать .waypoints (zip)"}
-          </button>
+          <>
+            <label>
+              Лимит точек на рейс (.waypoints)
+              <input
+                min={50}
+                max={2000}
+                step={10}
+                type="number"
+                value={waypointsMaxPoints}
+                onChange={(event) => setWaypointsMaxPoints(Number(event.target.value))}
+              />
+            </label>
+            <button type="button" onClick={() => void downloadWaypointsZip()} disabled={downloadingWaypoints}>
+              {downloadingWaypoints ? "Готовим архив..." : "Скачать .waypoints (zip)"}
+            </button>
+          </>
         )}
 
         {Object.keys(metrics).length > 0 && (

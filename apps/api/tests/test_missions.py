@@ -261,7 +261,7 @@ def test_download_waypoints_zip() -> None:
         assert create_response.status_code == 200
         mission_id = create_response.json()["id"]
 
-        export_response = client.get(f"/missions/{mission_id}/waypoints.zip", headers=headers)
+        export_response = client.get(f"/missions/{mission_id}/waypoints.zip?max_points=120", headers=headers)
         assert export_response.status_code == 200
         assert export_response.headers["content-type"] == "application/zip"
         assert "attachment;" in export_response.headers["content-disposition"]

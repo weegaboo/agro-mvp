@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 import json
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -252,6 +252,7 @@ def get_mission(
 @app.get("/missions/{mission_id}/waypoints.zip")
 def download_mission_waypoints(
     mission_id: int,
+    max_points: int = Query(290, ge=50, le=2000),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -270,7 +271,11 @@ def download_mission_waypoints(
         raise HTTPException(status_code=400, detail="Mission has no route geo payload")
 
     try:
-        archive_name, archive_content = build_waypoints_zip(mission_id=mission.id, route_geo=route_geo)
+        archive_name, archive_content = build_waypoints_zip(
+            mission_id=mission.id,
+            route_geo=route_geo,
+            max_points=max_points,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
