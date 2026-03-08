@@ -23,6 +23,9 @@ type MissionDetail = {
     route?: {
       geo?: Record<string, unknown>;
       metrics?: Record<string, number>;
+      config?: {
+        aircraft?: Record<string, unknown>;
+      };
     };
     logs?: string[];
     error?: string;
@@ -56,6 +59,18 @@ const METRIC_LABELS: Record<string, string> = {
   fert_l: "Смесь, л",
   field_area_ha: "Площадь поля, га",
   sprayed_area_ha: "Покрыто, га",
+};
+
+const OBJECTIVE_LABELS: Record<string, string> = {
+  n_swath: "Количество сватов",
+  swath_length: "Длина сватов",
+  field_coverage: "Покрытие поля",
+  overlap: "Перекрытие",
+};
+
+const TRANSITION_MODE_LABELS: Record<string, string> = {
+  kinodynamic: "Авиационный (OMPL.control)",
+  geometric: "Геометрический (Dubins)",
 };
 
 export default function AppPage() {
@@ -243,7 +258,58 @@ export default function AppPage() {
 
   const routeGeo = selectedMission?.result_json?.route?.geo;
   const metrics = selectedMission?.result_json?.route?.metrics ?? {};
+  const routeAircraft = selectedMission?.result_json?.route?.config?.aircraft;
   const trips = (routeGeo?.trips as Array<Record<string, unknown>> | undefined) ?? [];
+  const swaths = (routeGeo?.swaths as Array<unknown> | undefined) ?? [];
+  const routeSummary = useMemo(() => {
+    if (!routeAircraft) return [];
+    const asNumber = (value: unknown, digits = 2): string | null => {
+      if (typeof value !== "number" || Number.isNaN(value)) return null;
+      return value.toFixed(digits);
+    };
+    const asString = (value: unknown): string | null => {
+      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "boolean") return value ? "Да" : "Нет";
+      return null;
+    };
+
+    const objectiveRaw = asString(routeAircraft.objective);
+    const transitionRaw = asString(routeAircraft.transition_mode);
+
+    const items: Array<{ key: string; label: string; value: string }> = [
+      { key: "trips", label: "Рейсов", value: String(trips.length) },
+      { key: "swaths", label: "Сватов", value: String(swaths.length) },
+      {
+        key: "mode",
+        label: "Режим переходов",
+        value: transitionRaw ? (TRANSITION_MODE_LABELS[transitionRaw] ?? transitionRaw) : "—",
+      },
+      {
+        key: "objective",
+        label: "Цель генератора",
+        value: objectiveRaw ? (OBJECTIVE_LABELS[objectiveRaw] ?? objectiveRaw) : "—",
+      },
+    ];
+
+    const pushIf = (key: string, label: string, value: string | null) => {
+      if (!value) return;
+      items.push({ key, label, value });
+    };
+
+    pushIf("spray_width_m", "Ширина захвата, м", asNumber(routeAircraft.spray_width_m, 1));
+    pushIf("turn_radius_m", "Радиус разворота, м", asNumber(routeAircraft.turn_radius_m, 1));
+    pushIf("total_capacity_l", "Общая емкость бака, л", asNumber(routeAircraft.total_capacity_l, 1));
+    pushIf("fuel_reserve_l", "Резерв топлива, л", asNumber(routeAircraft.fuel_reserve_l, 1));
+    pushIf("mix_rate_l_per_ha", "Расход смеси, л/га", asNumber(routeAircraft.mix_rate_l_per_ha, 2));
+    pushIf("fuel_burn_l_per_km", "Расход топлива, л/км", asNumber(routeAircraft.fuel_burn_l_per_km, 3));
+    pushIf("headland_factor", "Кромка, x ширины", asNumber(routeAircraft.headland_factor, 1));
+    pushIf("cruise_speed_mps", "Крейсерская скорость, м/с", asNumber(routeAircraft.cruise_speed_mps, 1));
+    pushIf("max_bank_deg", "Макс. крен, °", asNumber(routeAircraft.max_bank_deg, 1));
+    pushIf("roll_time_constant_s", "Постоянная разворота, с", asNumber(routeAircraft.roll_time_constant_s, 2));
+    pushIf("transition_fallback", "Fallback на geometric", asString(routeAircraft.transition_fallback));
+
+    return items;
+  }, [routeAircraft, trips.length, swaths.length]);
   const hasDrawerOpen = leftDrawerOpen || rightDrawerOpen;
 
   const toggleLeftDrawer = () => {
@@ -481,6 +547,20 @@ export default function AppPage() {
             <button type="button" onClick={() => void downloadWaypointsZip()} disabled={downloadingWaypoints}>
               {downloadingWaypoints ? "Готовим архив..." : "Скачать .waypoints (zip)"}
             </button>
+          </>
+        )}
+
+        {routeSummary.length > 0 && (
+          <>
+            <h3>Параметры построенного маршрута</h3>
+            <div className="metrics-grid">
+              {routeSummary.map((item) => (
+                <div key={item.key} className="metric-card">
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                </div>
+              ))}
+            </div>
           </>
         )}
 
