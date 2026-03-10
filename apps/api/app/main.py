@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import json
@@ -30,9 +31,18 @@ from .services.missions import create_mission, get_mission_by_id, list_missions,
 from .services.waypoints import build_waypoints_zip
 
 app = FastAPI(title="Agro API", version="0.1.0")
+
+
+def _allowed_origins_from_env() -> list[str]:
+    """Read CORS origins from API_ALLOWED_ORIGINS (comma-separated)."""
+    raw = os.getenv("API_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins_from_env(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

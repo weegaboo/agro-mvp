@@ -3,15 +3,15 @@ services:
     image: postgres:16-alpine
     container_name: agro-db
     environment:
-      POSTGRES_DB: agro
-      POSTGRES_USER: agro
-      POSTGRES_PASSWORD: agro
+      POSTGRES_DB: ${POSTGRES_DB:-agro}
+      POSTGRES_USER: ${POSTGRES_USER:-agro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agro}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agro -d agro"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agro} -d ${POSTGRES_DB:-agro}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -22,11 +22,17 @@ services:
       dockerfile: apps/api/Dockerfile
     container_name: agro-api
     environment:
-      DATABASE_URL: postgresql+psycopg://agro:agro@db:5432/agro
-      JWT_SECRET_KEY: dev-secret-key
-      ACCESS_TOKEN_EXPIRE_MINUTES: 120
+      POSTGRES_DB: ${POSTGRES_DB:-agro}
+      POSTGRES_USER: ${POSTGRES_USER:-agro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agro}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_INTERNAL_PORT: ${POSTGRES_INTERNAL_PORT:-5432}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agro}:${POSTGRES_PASSWORD:-agro}@${POSTGRES_HOST:-db}:${POSTGRES_INTERNAL_PORT:-5432}/${POSTGRES_DB:-agro}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-120}
+      API_ALLOWED_ORIGINS: ${API_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
-      - "8000:8000"
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -37,9 +43,9 @@ services:
       dockerfile: apps/web/Dockerfile
     container_name: agro-web
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     ports:
-      - "3000:3000"
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
     depends_on:
       - api
 
