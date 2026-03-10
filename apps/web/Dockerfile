@@ -12,6 +12,7 @@ COPY . /app
 
 WORKDIR /app/apps/web
 RUN npm run build
+RUN mkdir -p /app/apps/web/public
 
 FROM node:20-alpine AS runner
 
