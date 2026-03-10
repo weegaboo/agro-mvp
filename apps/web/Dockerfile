@@ -11,12 +11,16 @@ COPY --from=deps /app/apps/web/node_modules /app/apps/web/node_modules
 COPY . /app
 
 WORKDIR /app/apps/web
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 RUN npm run build
 RUN mkdir -p /app/apps/web/public
 
 FROM node:20-alpine AS runner
 
 ENV NODE_ENV=production
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 WORKDIR /app/apps/web
 
 COPY --from=builder /app/apps/web/.next /app/apps/web/.next

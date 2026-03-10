@@ -22,6 +22,13 @@ Main variables:
 - `POSTGRES_PASSWORD` - database password (must be changed in production).
 - `WEB_BIND_ADDRESS`, `API_BIND_ADDRESS`, `POSTGRES_BIND_ADDRESS` - bind addresses for published ports.
 
+Important:
+- `NEXT_PUBLIC_API_BASE_URL` is injected at web image build time.
+- If you change it, rebuild web image:
+```bash
+docker compose up --build -d web
+```
+
 ## Local run (laptop)
 
 ### 1) Set `.env` for local
