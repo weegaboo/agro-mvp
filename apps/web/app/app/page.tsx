@@ -1,0 +1,605 @@
+"use client";
+
+import type { GeoJsonObject } from "geojson";
+import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+const MapEditor = dynamic(() => import("./map-editor"), { ssr: false });
+
+type DrawTarget = "field" | "runway" | "nfz";
+
+type MissionListItem = {
+  id: number;
+  status: string;
+  created_at: string;
+};
+
+type MissionDetail = {
+  id: number;
+  status: string;
+  created_at: string;
+  result_json: {
+    route?: {
+      geo?: Record<string, unknown>;
+      metrics?: Record<string, number>;
+      config?: {
+        aircraft?: Record<string, unknown>;
+      };
+    };
+    logs?: string[];
+    error?: string;
+  } | null;
+};
+
+type AircraftParams = {
+  spray_width_m: number;
+  turn_radius_m: number;
+  total_capacity_l: number;
+  fuel_reserve_l: number;
+  mix_rate_l_per_ha: number;
+  fuel_burn_l_per_km: number;
+  headland_factor: number;
+  objective: "n_swath" | "swath_length" | "field_coverage" | "overlap";
+  use_cc: boolean;
+};
+
+type GeomsState = {
+  field: GeoJsonObject | null;
+  runway_centerline: GeoJsonObject | null;
+  nfz: GeoJsonObject[];
+};
+
+const METRIC_LABELS: Record<string, string> = {
+  length_total_m: "Общая длина, м",
+  length_transit_m: "Транзит, м",
+  length_spray_m: "Обработка, м",
+  time_total_min: "Общее время, мин",
+  fuel_l: "Топливо, л",
+  fert_l: "Смесь, л",
+  field_area_ha: "Площадь поля, га",
+  sprayed_area_ha: "Покрыто, га",
+};
+
+const OBJECTIVE_LABELS: Record<string, string> = {
+  n_swath: "Количество сватов",
+  swath_length: "Длина сватов",
+  field_coverage: "Покрытие поля",
+  overlap: "Перекрытие",
+};
+
+const TRANSITION_MODE_LABELS: Record<string, string> = {
+  kinodynamic: "Авиационный (OMPL.control)",
+  geometric: "Геометрический (Dubins)",
+};
+
+export default function AppPage() {
+  const router = useRouter();
+  const apiBaseUrl = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000", []);
+  const [token, setToken] = useState<string | null>(null);
+  const [drawTarget, setDrawTarget] = useState<DrawTarget>("field");
+  const [geoms, setGeoms] = useState<GeomsState>({ field: null, runway_centerline: null, nfz: [] });
+  const [aircraft, setAircraft] = useState<AircraftParams>({
+    spray_width_m: 20,
+    turn_radius_m: 40,
+    total_capacity_l: 200,
+    fuel_reserve_l: 5,
+    mix_rate_l_per_ha: 10,
+    fuel_burn_l_per_km: 0.35,
+    headland_factor: 3,
+    objective: "n_swath",
+    use_cc: true,
+  });
+  const [missions, setMissions] = useState<MissionListItem[]>([]);
+  const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
+  const [mapStyle, setMapStyle] = useState<"scheme" | "satellite" | "hybrid">("hybrid");
+  const [routePaletteMode, setRoutePaletteMode] = useState<"full_gradient" | "trips_darkness">("full_gradient");
+  const [selectedTripIndex, setSelectedTripIndex] = useState<number | null>(null);
+  const [layerVisibility, setLayerVisibility] = useState({
+    field: true,
+    nfz: true,
+    swaths: true,
+    transit: true,
+    trips: true,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [downloadingWaypoints, setDownloadingWaypoints] = useState(false);
+  const [waypointsMaxPoints, setWaypointsMaxPoints] = useState(290);
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const savedToken = localStorage.getItem("agro_access_token");
+    if (!savedToken) {
+      router.replace("/login");
+      return;
+    }
+    setToken(savedToken);
+  }, [router]);
+
+  const loadMissions = useCallback(async (authToken: string) => {
+    const response = await fetch(`${apiBaseUrl}/missions`, { headers: { Authorization: `Bearer ${authToken}` } });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail ?? "Не удалось загрузить миссии");
+    setMissions(payload as MissionListItem[]);
+  }, [apiBaseUrl]);
+
+  const loadMissionById = useCallback(async (missionId: number) => {
+    if (!token) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/missions/${missionId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось загрузить миссию");
+      setSelectedMission(payload as MissionDetail);
+      setSelectedTripIndex(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Неизвестная ошибка");
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBaseUrl, token]);
+
+  useEffect(() => {
+    if (!token) return;
+    void loadMissions(token).catch((loadError: unknown) => {
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить миссии");
+    });
+  }, [token, loadMissions]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLeftDrawerOpen(false);
+        setRightDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const handleCreateGeometry = (target: DrawTarget, geometry: GeoJsonObject) => {
+    setGeoms((prev) => {
+      if (target === "field") return { ...prev, field: geometry };
+      if (target === "runway") return { ...prev, runway_centerline: geometry };
+      return { ...prev, nfz: [...prev.nfz, geometry] };
+    });
+  };
+
+  const clearGeometry = (target: DrawTarget) => {
+    setGeoms((prev) => {
+      if (target === "field") return { ...prev, field: null };
+      if (target === "runway") return { ...prev, runway_centerline: null };
+      return { ...prev, nfz: [] };
+    });
+  };
+
+  const buildMission = async () => {
+    if (!token) return;
+    if (!geoms.field || !geoms.runway_centerline) {
+      const missing = [
+        !geoms.field ? "полигон поля" : null,
+        !geoms.runway_centerline ? "линия ВПП" : null,
+      ]
+        .filter(Boolean)
+        .join(" и ");
+      setError(`Не заданы обязательные геометрии: ${missing}`);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/missions/from-geo`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ geoms, aircraft }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail ?? "Не удалось построить миссию");
+      await loadMissions(token);
+      await loadMissionById((payload as MissionDetail).id);
+    } catch (buildError) {
+      setError(buildError instanceof Error ? buildError.message : "Неизвестная ошибка");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("agro_access_token");
+    router.push("/login");
+  };
+
+  const downloadWaypointsZip = async () => {
+    if (!token || !selectedMission) return;
+    setError(null);
+    setDownloadingWaypoints(true);
+    try {
+      const query = new URLSearchParams({
+        max_points: String(Math.max(50, Math.min(2000, Math.floor(waypointsMaxPoints || 290)))),
+      });
+      const response = await fetch(
+        `${apiBaseUrl}/missions/${selectedMission.id}/waypoints.zip?${query.toString()}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(
+          typeof payload?.detail === "string" ? payload.detail : "Не удалось скачать .waypoints архив",
+        );
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const fallbackName = `mission_${selectedMission.id}_waypoints.zip`;
+      const contentDisposition = response.headers.get("content-disposition");
+      const filenameMatch = contentDisposition?.match(/filename=\"?([^"]+)\"?/i);
+      link.href = objectUrl;
+      link.download = filenameMatch?.[1] ?? fallbackName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "Неизвестная ошибка");
+    } finally {
+      setDownloadingWaypoints(false);
+    }
+  };
+
+  const routeGeo = selectedMission?.result_json?.route?.geo;
+  const metrics = selectedMission?.result_json?.route?.metrics ?? {};
+  const routeAircraft = selectedMission?.result_json?.route?.config?.aircraft;
+  const trips = (routeGeo?.trips as Array<Record<string, unknown>> | undefined) ?? [];
+  const swaths = (routeGeo?.swaths as Array<unknown> | undefined) ?? [];
+  const routeSummary = useMemo(() => {
+    if (!routeAircraft) return [];
+    const asNumber = (value: unknown, digits = 2): string | null => {
+      if (typeof value !== "number" || Number.isNaN(value)) return null;
+      return value.toFixed(digits);
+    };
+    const asString = (value: unknown): string | null => {
+      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "boolean") return value ? "Да" : "Нет";
+      return null;
+    };
+
+    const objectiveRaw = asString(routeAircraft.objective);
+    const transitionRaw = asString(routeAircraft.transition_mode);
+
+    const items: Array<{ key: string; label: string; value: string }> = [
+      { key: "trips", label: "Рейсов", value: String(trips.length) },
+      { key: "swaths", label: "Сватов", value: String(swaths.length) },
+      {
+        key: "mode",
+        label: "Режим переходов",
+        value: transitionRaw ? (TRANSITION_MODE_LABELS[transitionRaw] ?? transitionRaw) : "—",
+      },
+      {
+        key: "objective",
+        label: "Цель генератора",
+        value: objectiveRaw ? (OBJECTIVE_LABELS[objectiveRaw] ?? objectiveRaw) : "—",
+      },
+    ];
+
+    const pushIf = (key: string, label: string, value: string | null) => {
+      if (!value) return;
+      items.push({ key, label, value });
+    };
+
+    pushIf("spray_width_m", "Ширина захвата, м", asNumber(routeAircraft.spray_width_m, 1));
+    pushIf("turn_radius_m", "Радиус разворота, м", asNumber(routeAircraft.turn_radius_m, 1));
+    pushIf("total_capacity_l", "Общая емкость бака, л", asNumber(routeAircraft.total_capacity_l, 1));
+    pushIf("fuel_reserve_l", "Резерв топлива, л", asNumber(routeAircraft.fuel_reserve_l, 1));
+    pushIf("mix_rate_l_per_ha", "Расход смеси, л/га", asNumber(routeAircraft.mix_rate_l_per_ha, 2));
+    pushIf("fuel_burn_l_per_km", "Расход топлива, л/км", asNumber(routeAircraft.fuel_burn_l_per_km, 3));
+    pushIf("headland_factor", "Кромка, x ширины", asNumber(routeAircraft.headland_factor, 1));
+    pushIf("cruise_speed_mps", "Крейсерская скорость, м/с", asNumber(routeAircraft.cruise_speed_mps, 1));
+    pushIf("max_bank_deg", "Макс. крен, °", asNumber(routeAircraft.max_bank_deg, 1));
+    pushIf("roll_time_constant_s", "Постоянная разворота, с", asNumber(routeAircraft.roll_time_constant_s, 2));
+    pushIf("transition_fallback", "Fallback на geometric", asString(routeAircraft.transition_fallback));
+
+    return items;
+  }, [routeAircraft, trips.length, swaths.length]);
+  const hasDrawerOpen = leftDrawerOpen || rightDrawerOpen;
+
+  const toggleLeftDrawer = () => {
+    setLeftDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setRightDrawerOpen(false);
+      return next;
+    });
+  };
+
+  const toggleRightDrawer = () => {
+    setRightDrawerOpen((prev) => {
+      const next = !prev;
+      if (next) setLeftDrawerOpen(false);
+      return next;
+    });
+  };
+
+  return (
+    <main className="workspace-shell">
+      <section className="map-stage">
+        <MapEditor
+          drawTarget={drawTarget}
+          geoms={geoms}
+          routeGeo={routeGeo}
+          mapStyle={mapStyle}
+          routePaletteMode={routePaletteMode}
+          selectedTripIndex={selectedTripIndex}
+          layerVisibility={layerVisibility}
+          onCreateGeometry={handleCreateGeometry}
+        />
+      </section>
+
+      <button
+        type="button"
+        className={`drawer-toggle left ${leftDrawerOpen ? "active" : ""}`}
+        onClick={toggleLeftDrawer}
+        aria-label={leftDrawerOpen ? "Закрыть панель параметров" : "Открыть панель параметров"}
+      >
+        ☰ Параметры
+      </button>
+      <button
+        type="button"
+        className={`drawer-toggle right ${rightDrawerOpen ? "active" : ""}`}
+        onClick={toggleRightDrawer}
+        aria-label={rightDrawerOpen ? "Закрыть панель миссий" : "Открыть панель миссий"}
+      >
+        Миссии ☰
+      </button>
+
+      {hasDrawerOpen && (
+        <button
+          type="button"
+          className="map-drawer-backdrop"
+          onClick={() => {
+            setLeftDrawerOpen(false);
+            setRightDrawerOpen(false);
+          }}
+          aria-label="Закрыть боковые панели"
+        />
+      )}
+
+      <section className={`workspace-panel drawer-panel left-panel ${leftDrawerOpen ? "open" : ""}`}>
+        <div className="drawer-header">
+          <h2>Параметры самолета и маршрута</h2>
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={() => setLeftDrawerOpen(false)}
+            aria-label="Закрыть панель параметров"
+          >
+            X
+          </button>
+        </div>
+        <label>
+          Ширина захвата, м
+          <input min={1} max={200} step={1} type="number" value={aircraft.spray_width_m} onChange={(e) => setAircraft({ ...aircraft, spray_width_m: Number(e.target.value) })} />
+        </label>
+        <label>
+          Радиус разворота, м
+          <input min={1} max={500} step={1} type="number" value={aircraft.turn_radius_m} onChange={(e) => setAircraft({ ...aircraft, turn_radius_m: Number(e.target.value) })} />
+        </label>
+        <label>
+          Общая емкость бака, л
+          <input min={1} max={10000} step={1} type="number" value={aircraft.total_capacity_l} onChange={(e) => setAircraft({ ...aircraft, total_capacity_l: Number(e.target.value) })} />
+        </label>
+        <label>
+          Резерв топлива, л
+          <input min={0} max={500} step={0.5} type="number" value={aircraft.fuel_reserve_l} onChange={(e) => setAircraft({ ...aircraft, fuel_reserve_l: Number(e.target.value) })} />
+        </label>
+        <label>
+          Расход смеси, л/га
+          <input min={0} max={200} type="number" step={0.5} value={aircraft.mix_rate_l_per_ha} onChange={(e) => setAircraft({ ...aircraft, mix_rate_l_per_ha: Number(e.target.value) })} />
+        </label>
+        <label>
+          Расход топлива, л/км
+          <input min={0} max={10} type="number" step={0.01} value={aircraft.fuel_burn_l_per_km} onChange={(e) => setAircraft({ ...aircraft, fuel_burn_l_per_km: Number(e.target.value) })} />
+        </label>
+        <label>
+          Кромка (x ширины захвата)
+          <input min={0} max={8} step={0.5} type="number" value={aircraft.headland_factor} onChange={(e) => setAircraft({ ...aircraft, headland_factor: Number(e.target.value) })} />
+        </label>
+        <label>
+          Цель генератора
+          <select
+            value={aircraft.objective}
+            onChange={(e) =>
+              setAircraft({
+                ...aircraft,
+                objective: e.target.value as "n_swath" | "swath_length" | "field_coverage" | "overlap",
+              })
+            }
+          >
+            <option value="n_swath">Количество сватов</option>
+            <option value="swath_length">Длина сватов</option>
+            <option value="field_coverage">Покрытие поля</option>
+            <option value="overlap">Перекрытие</option>
+          </select>
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={aircraft.use_cc}
+            onChange={(e) =>
+              setAircraft({
+                ...aircraft,
+                use_cc: e.target.checked,
+              })
+            }
+          />
+          Использовать непрерывную кривизну
+        </label>
+
+        <h3>Редактор геометрии</h3>
+        <p>
+          Используйте инструменты рисования: полигон для {drawTarget === "nfz" ? "NFZ" : "поля"},
+          полилиния для ВПП.
+        </p>
+        <div className="mode-row">
+          <button type="button" className={drawTarget === "field" ? "" : "secondary"} onClick={() => setDrawTarget("field")}>Полигон в Поле</button>
+          <button type="button" className={drawTarget === "nfz" ? "" : "secondary"} onClick={() => setDrawTarget("nfz")}>Полигон в NFZ</button>
+        </div>
+        <h3>Слои карты</h3>
+        <label>
+          Стиль карты
+          <select value={mapStyle} onChange={(e) => setMapStyle(e.target.value as "scheme" | "satellite" | "hybrid")}>
+            <option value="scheme">Схема</option>
+            <option value="satellite">Спутник</option>
+            <option value="hybrid">Гибрид</option>
+          </select>
+        </label>
+        <label>
+          Окраска маршрута
+          <select
+            value={routePaletteMode}
+            onChange={(e) => setRoutePaletteMode(e.target.value as "full_gradient" | "trips_darkness")}
+          >
+            <option value="full_gradient">Все рейсы: от зеленого к темному</option>
+            <option value="trips_darkness">Рейсы по порядку: от светлого к темному</option>
+          </select>
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.field} onChange={(e) => setLayerVisibility({ ...layerVisibility, field: e.target.checked })} />
+          Поле
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.nfz} onChange={(e) => setLayerVisibility({ ...layerVisibility, nfz: e.target.checked })} />
+          NFZ
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.swaths} onChange={(e) => setLayerVisibility({ ...layerVisibility, swaths: e.target.checked })} />
+          Сваты
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.transit} onChange={(e) => setLayerVisibility({ ...layerVisibility, transit: e.target.checked })} />
+          Рабочий маршрут
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={layerVisibility.trips} onChange={(e) => setLayerVisibility({ ...layerVisibility, trips: e.target.checked })} />
+          Долеты/возвраты рейсов
+        </label>
+        <p className="panel-status">Поле: {geoms.field ? "задано" : "не задано"} | ВПП: {geoms.runway_centerline ? "задана" : "не задана"} | NFZ: {geoms.nfz.length}</p>
+        <div className="mode-row">
+          <button type="button" className="secondary" onClick={() => clearGeometry("field")}>Очистить поле</button>
+        </div>
+        <div className="mode-row">
+          <button type="button" className="secondary" onClick={() => clearGeometry("runway")}>Очистить ВПП</button>
+          <button type="button" className="secondary" onClick={() => clearGeometry("nfz")}>Очистить NFZ</button>
+        </div>
+
+        <button type="button" onClick={() => void buildMission()} disabled={loading}>
+          {loading ? "Строим..." : "Построить миссию"}
+        </button>
+        <button type="button" className="secondary" onClick={handleLogout}>Выйти</button>
+        {error && <p className="error-text">{error}</p>}
+      </section>
+
+      <section className={`workspace-panel drawer-panel right-panel ${rightDrawerOpen ? "open" : ""}`}>
+        <div className="drawer-header">
+          <h2>Миссии и статистика</h2>
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={() => setRightDrawerOpen(false)}
+            aria-label="Закрыть панель миссий"
+          >
+            X
+          </button>
+        </div>
+        <div className="mission-list">
+          {missions.map((mission) => (
+            <button
+              key={mission.id}
+              type="button"
+              className={`mission-item ${selectedMission?.id === mission.id ? "active" : ""}`}
+              onClick={() => void loadMissionById(mission.id)}
+            >
+              #{mission.id} · {mission.status}
+            </button>
+          ))}
+        </div>
+        {selectedMission?.status === "success" && (
+          <>
+            <label>
+              Лимит точек на рейс (.waypoints)
+              <input
+                min={50}
+                max={2000}
+                step={10}
+                type="number"
+                value={waypointsMaxPoints}
+                onChange={(event) => setWaypointsMaxPoints(Number(event.target.value))}
+              />
+            </label>
+            <button type="button" onClick={() => void downloadWaypointsZip()} disabled={downloadingWaypoints}>
+              {downloadingWaypoints ? "Готовим архив..." : "Скачать .waypoints (zip)"}
+            </button>
+          </>
+        )}
+
+        {routeSummary.length > 0 && (
+          <>
+            <h3>Параметры построенного маршрута</h3>
+            <div className="metrics-grid">
+              {routeSummary.map((item) => (
+                <div key={item.key} className="metric-card">
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {Object.keys(metrics).length > 0 && (
+          <>
+            <h3>Метрики миссии</h3>
+            <div className="metrics-grid">
+              {Object.entries(metrics).map(([key, value]) => (
+                <div key={key} className="metric-card">
+                  <span>{METRIC_LABELS[key] ?? key}</span>
+                  <strong>{Number(value).toFixed(2)}</strong>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {trips.length > 0 && (
+          <>
+            <h3>Рейсы</h3>
+            <div className="mode-row">
+              <button type="button" className={selectedTripIndex === null ? "" : "secondary"} onClick={() => setSelectedTripIndex(null)}>
+                Все рейсы
+              </button>
+            </div>
+            <div className="trip-list">
+              {trips.map((trip, index) => (
+                <button key={index} type="button" className={`trip-card ${selectedTripIndex === index ? "active" : ""}`} onClick={() => setSelectedTripIndex(index)}>
+                  <strong>Рейс {index + 1}</strong>
+                  <div>Сваты: {String(trip.start_idx)} - {String(trip.end_idx)}</div>
+                  <div>Топливо: {Number(trip.fuel_used_l ?? 0).toFixed(2)} л</div>
+                  <div>Смесь: {Number(trip.mix_used_l ?? 0).toFixed(2)} л</div>
+                </button>
+              ))}
+            </div>
+            {selectedTripIndex !== null && <p>Выбранный рейс выделен синим градиентом.</p>}
+          </>
+        )}
+      </section>
+    </main>
+  );
+}

@@ -1,8 +1,11 @@
+.idea/
+.env
+.DS_Store
 __pycache__/
 *.pyc
-.venv/
-.streamlit/
-data/projects/
-.env
-.idea/
-.DS_Store
+.pytest_cache/
+
+apps/web/node_modules/
+apps/web/.next/
+
+data/

@@ -1,0 +1,4 @@
+numpy>=1.26
+shapely>=2.0
+pyproj>=3.6
+ompl>=1.7.0
