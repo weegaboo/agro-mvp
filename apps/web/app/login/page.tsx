@@ -4,6 +4,31 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useMemo, useState } from "react";
 
+async function extractErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    const detail = payload?.detail;
+    if (typeof detail === "string" && detail.trim().length > 0) return detail;
+    if (Array.isArray(detail) && detail.length > 0) {
+      return detail
+        .map((item: unknown) => {
+          if (typeof item === "string") return item;
+          if (item && typeof item === "object") {
+            const rec = item as Record<string, unknown>;
+            const msg = typeof rec.msg === "string" ? rec.msg : JSON.stringify(rec);
+            const loc = Array.isArray(rec.loc) ? rec.loc.join(".") : null;
+            return loc ? `${loc}: ${msg}` : msg;
+          }
+          return String(item);
+        })
+        .join("; ");
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const apiBaseUrl = useMemo(
@@ -26,10 +51,10 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ login, password }),
       });
-      const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail ?? "Не удалось выполнить вход");
+        throw new Error(await extractErrorMessage(response, "Не удалось выполнить вход"));
       }
+      const payload = await response.json();
       localStorage.setItem("agro_access_token", payload.access_token);
       router.push("/app");
     } catch (submitError) {
